@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 export async function POST(req: Request) {
   try {
@@ -18,15 +18,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "question is required" }, { status: 400 });
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Anthropic API key not configured. Set ANTHROPIC_API_KEY in .env.local" },
+        { error: "OpenAI API key not configured. Set OPENAI_API_KEY in .env.local" },
         { status: 500 }
       );
     }
 
-    const anthropic = new Anthropic({ apiKey });
+    const openai = new OpenAI({ apiKey });
     const today = new Date().toISOString().split("T")[0];
 
     const systemPrompt = `You are an elite Superforecaster, trained in the methodology of Philip Tetlock's Good Judgment Project. You estimate probabilities for prediction market questions with calibrated confidence.
@@ -95,29 +95,25 @@ Resolution Date: ${endDate}
 ${description ? `Description: ${description}` : ""}
 ${category ? `Category: ${category}` : ""}
 
-Apply the Superforecaster methodology and provide your calibrated probability estimate. Respond with ONLY the JSON object, no other text.`;
+Apply the Superforecaster methodology and provide your calibrated probability estimate.`;
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 3000,
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
       temperature: 0.3,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      max_tokens: 3000,
+      response_format: { type: "json_object" },
     });
 
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      return NextResponse.json({ error: "Empty response from Claude" }, { status: 500 });
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      return NextResponse.json({ error: "Empty response from OpenAI" }, { status: 500 });
     }
 
-    // Extract JSON from response (Claude may wrap in markdown code blocks)
-    let jsonStr = textBlock.text.trim();
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1].trim();
-    }
-
-    const result = JSON.parse(jsonStr);
+    const result = JSON.parse(content);
     return NextResponse.json({ data: result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Analysis failed";

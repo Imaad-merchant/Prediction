@@ -11,7 +11,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("All");
+  const [category, setCategory] = useState("");
   const [sortBy, setSortBy] = useState("volume");
 
   const fetchMarkets = useCallback(async () => {
@@ -23,7 +23,7 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: query || undefined,
-          category: category !== "All" ? category.toLowerCase() : undefined,
+          category: category || undefined,
           sortBy,
           limit: 30,
         }),

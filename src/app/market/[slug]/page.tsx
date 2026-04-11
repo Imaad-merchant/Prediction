@@ -34,25 +34,20 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
 
-  // Fetch market info
+  // Fetch market info by ID
   useEffect(() => {
     async function load() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch("/api/markets", {
+        const res = await fetch("/api/market", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: slug, limit: 10 }),
+          body: JSON.stringify({ id: slug }),
         });
         const json = await res.json();
         if (json.error) throw new Error(json.error);
-
-        const found = (json.data || []).find(
-          (m: Market) => m.slug === slug || m.conditionId === slug || m.id === slug
-        );
-        if (!found) throw new Error("Market not found");
-        setMarket(found);
+        setMarket(json.data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load market");
       } finally {

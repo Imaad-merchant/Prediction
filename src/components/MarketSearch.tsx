@@ -5,14 +5,16 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 const CATEGORIES = [
-  "All",
-  "Politics",
-  "Crypto",
-  "Sports",
-  "Science",
-  "Finance",
-  "Tech",
-  "Culture",
+  { label: "All", slug: "" },
+  { label: "Politics", slug: "politics" },
+  { label: "Crypto", slug: "crypto" },
+  { label: "Sports", slug: "sports" },
+  { label: "Finance", slug: "finance" },
+  { label: "Science", slug: "science" },
+  { label: "Tech", slug: "tech" },
+  { label: "Pop Culture", slug: "pop-culture" },
+  { label: "Business", slug: "business" },
+  { label: "World", slug: "world" },
 ];
 
 const SORT_OPTIONS = [
@@ -59,12 +61,12 @@ export default function MarketSearch({
       <div className="flex flex-wrap gap-2">
         {CATEGORIES.map((cat) => (
           <Button
-            key={cat}
-            variant={category === cat ? "default" : "outline"}
+            key={cat.slug}
+            variant={category === cat.slug ? "default" : "outline"}
             size="sm"
-            onClick={() => onCategoryChange(cat)}
+            onClick={() => onCategoryChange(cat.slug)}
           >
-            {cat}
+            {cat.label}
           </Button>
         ))}
       </div>

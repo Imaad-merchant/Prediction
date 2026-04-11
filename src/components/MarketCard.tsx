@@ -13,7 +13,7 @@ export default function MarketCard({ market }: { market: Market }) {
   const noPct = Math.round(noPrice * 100);
 
   return (
-    <Link href={`/market/${market.slug || market.conditionId || market.id}`}>
+    <Link href={`/market/${market.id}`}>
       <div className="group border border-gray-800 rounded-xl bg-gray-900 hover:bg-gray-800/80 hover:border-gray-700 transition-all p-4 cursor-pointer">
         <div className="flex gap-3">
           {market.image && (

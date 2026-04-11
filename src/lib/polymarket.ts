@@ -12,6 +12,11 @@ export async function fetchMarkets(params: {
 }): Promise<Market[]> {
   const { query, limit = 20, offset = 0, sortBy = "volume", category } = params;
 
+  // If category is set, use the events endpoint with tag_slug (markets endpoint doesn't filter by tag)
+  if (category) {
+    return fetchMarketsByCategory(category, limit, offset, sortBy);
+  }
+
   const searchParams = new URLSearchParams({
     closed: "false",
     active: "true",
@@ -22,14 +27,47 @@ export async function fetchMarkets(params: {
   });
 
   if (query) searchParams.set("_q", query);
-  if (category) searchParams.set("tag", category);
 
   const res = await fetch(`${GAMMA_API}/markets?${searchParams}`);
   if (!res.ok) throw new Error(`Gamma API error: ${res.status}`);
 
   const raw = await res.json();
-
   return raw.map((m: Record<string, unknown>) => normalizeMarket(m)).filter(Boolean) as Market[];
+}
+
+async function fetchMarketsByCategory(
+  category: string,
+  limit: number,
+  offset: number,
+  sortBy: string
+): Promise<Market[]> {
+  const searchParams = new URLSearchParams({
+    closed: "false",
+    active: "true",
+    limit: String(limit),
+    offset: String(offset),
+    order: sortBy === "endDate" ? "end_date_iso" : sortBy,
+    ascending: sortBy === "endDate" ? "true" : "false",
+    tag_slug: category.toLowerCase(),
+  });
+
+  const res = await fetch(`${GAMMA_API}/events?${searchParams}`);
+  if (!res.ok) throw new Error(`Gamma API error: ${res.status}`);
+
+  const events = await res.json();
+
+  // Extract markets from events and flatten
+  const markets: Market[] = [];
+  for (const event of events) {
+    const eventMarkets = event.markets || [];
+    const eventTags = (event.tags || []).map((t: Record<string, string>) => t.label).join(", ");
+    for (const m of eventMarkets) {
+      const normalized = normalizeMarket({ ...m, eventTitle: event.title, tagLabels: eventTags });
+      if (normalized) markets.push(normalized);
+    }
+  }
+
+  return markets;
 }
 
 function normalizeMarket(m: Record<string, unknown>): Market | null {
@@ -52,6 +90,14 @@ function normalizeMarket(m: Record<string, unknown>): Market | null {
       price: Number(outcomePrices[i]) || 0,
     }));
 
+    // Extract category from tags array or tagLabels string
+    let cat = "";
+    if (typeof m.tagLabels === "string") {
+      cat = m.tagLabels as string;
+    } else if (Array.isArray(m.tags)) {
+      cat = (m.tags as Array<Record<string, string>>).map((t) => t.label || t).filter(Boolean).join(", ");
+    }
+
     return {
       id: String(m.id || ""),
       question: String(m.question || ""),
@@ -68,11 +114,18 @@ function normalizeMarket(m: Record<string, unknown>): Market | null {
       closed: Boolean(m.closed),
       conditionId: String(m.conditionId || ""),
       tokens,
-      category: String((m.tags as string[])?.[0] || m.category || ""),
+      category: cat,
     };
   } catch {
     return null;
   }
+}
+
+export async function fetchMarketById(id: string): Promise<Market | null> {
+  const res = await fetch(`${GAMMA_API}/markets/${id}`);
+  if (!res.ok) return null;
+  const raw = await res.json();
+  return normalizeMarket(raw);
 }
 
 export async function fetchOrderBook(tokenId: string) {
