@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 
-const SIGNALS_DIR = join(process.cwd(), "data");
+const SIGNALS_DIR = process.env.VERCEL
+  ? join("/tmp", "data")
+  : join(process.cwd(), "data");
 const SIGNALS_FILE = join(SIGNALS_DIR, "signals.json");
 
 async function readSignals() {

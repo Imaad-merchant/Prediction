@@ -134,6 +134,56 @@ export interface ResearchItem {
   publishedAt?: string;
 }
 
+// === Trading Dashboard Types ===
+
+export interface TradingConfig {
+  bankroll: number;
+  maxBetSize: number;
+  dailyLossLimit: number;
+  mode: "paper" | "live";
+  isRunning: boolean;
+  lastRunAt: string | null;
+}
+
+export interface Trade {
+  id: string;
+  marketId: string;
+  question: string;
+  side: "YES" | "NO";
+  shares: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  pnl: number | null;
+  pnlPercent: number | null;
+  status: "open" | "settled_win" | "settled_loss" | "stopped_out";
+  confidence: string;
+  edge: number;
+  strategyScore: number | null;
+  tokenId: string;
+  endDate: string;
+  enteredAt: string;
+  settledAt: string | null;
+}
+
+export interface PortfolioState {
+  totalValue: number;
+  cashBalance: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
+  maxDrawdown: number;
+  equityCurve: Array<{ timestamp: string; value: number }>;
+}
+
+export interface TradesStore {
+  config: TradingConfig;
+  portfolio: PortfolioState;
+  trades: Trade[];
+}
+
 export interface OpportunityScore {
   overall: number;
   edgeScore: number;
