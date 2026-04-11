@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, Radio, LayoutGrid, Zap, BarChart2 } from "lucide-react";
+import { TrendingUp, Radio, LayoutGrid, Zap, BarChart2, PieChart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function Navbar() {
@@ -12,6 +12,7 @@ export default function Navbar() {
   const links = [
     { href: "/markets", label: "Markets", icon: LayoutGrid },
     { href: "/dashboard", label: "Dashboard", icon: BarChart2 },
+    { href: "/analytics", label: "Analytics", icon: PieChart },
     { href: "/signals", label: "Signals", icon: Radio },
   ];
 

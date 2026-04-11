@@ -143,15 +143,20 @@ export interface TradingConfig {
   mode: "paper" | "live";
   isRunning: boolean;
   lastRunAt: string | null;
-  // From Polymarket_trader
   strategy: "expiry_convergence" | "settlement_arbitrage" | "combined";
   maxPositions: number;
-  capitalSplitPercent: number; // max % of balance per position (e.g. 0.20 = 20%)
-  stopLossPercent: number; // close if price drops X% below entry (0 = disabled)
-  slippageTolerancePercent: number; // abort trade if slippage > this
-  takerFeePercent: number; // Polymarket taker fee (default 2%)
-  minConfidence: number; // minimum confidence score (0-1)
-  minEdge: number; // minimum edge in percentage points
+  capitalSplitPercent: number;
+  stopLossPercent: number;
+  slippageTolerancePercent: number;
+  takerFeePercent: number;
+  minConfidence: number;
+  minEdge: number;
+  // New risk params
+  maxPositionPercent: number; // hard cap per position as % of portfolio (default 5%)
+  takeProfitPercent: number; // auto-close at +X% unrealized (default 80%)
+  portfolioStopPercent: number; // pause new entries if total unrealized < -X% (default 15%)
+  timeExitHours: number; // close if < N hours to resolution + price > 0.85 (default 24)
+  minAskSize: number; // min best-ask size in $ to avoid illiquid fills (default 500)
 }
 
 export interface SlippageEstimate {
@@ -162,6 +167,8 @@ export interface SlippageEstimate {
   unfilledUsd: number;
   liquidityOk: boolean;
 }
+
+export type ExitReason = "stop_loss" | "take_profit" | "time_exit" | "edge_flip" | "manual" | "settlement" | null;
 
 export interface Trade {
   id: string;
@@ -181,12 +188,18 @@ export interface Trade {
   endDate: string;
   enteredAt: string;
   settledAt: string | null;
-  // From Polymarket_trader
   strategy: "expiry_convergence" | "settlement_arbitrage";
-  entryFee: number; // taker fee paid on entry
-  exitFee: number | null; // taker fee paid on exit
-  slippageEstimate: number; // estimated slippage % at entry
-  stopLossPrice: number | null; // price at which stop-loss triggers
+  entryFee: number;
+  exitFee: number | null;
+  slippageEstimate: number;
+  stopLossPrice: number | null;
+  // New fields
+  edgeScore: number; // (modelProb - marketProb) * liquidityScore
+  reasoning: string; // AI reasoning summary for explainability
+  exitReason: ExitReason;
+  takeProfitPrice: number | null;
+  category: string; // market category for analytics
+  modelProbability: number; // AI predicted probability
 }
 
 export interface PortfolioState {

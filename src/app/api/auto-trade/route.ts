@@ -4,10 +4,13 @@ import {
   defaultTradesStore,
   calculatePortfolioStats,
   calculatePositionSize,
+  calculateEdgeScore,
   shouldTakeTrade,
   simulateTradeEntry,
   checkSettlement,
   checkStopLoss,
+  checkTakeProfit,
+  checkTimeExit,
   estimateSlippage,
   passesSlippageGate,
   scoreSettlementArbitrage,
@@ -103,9 +106,9 @@ export async function POST(req: Request) {
     const stoppedTrades: Trade[] = [];
     let tradesAnalyzed = 0;
 
-    // Step 1: Check stop-losses in PARALLEL
+    // Step 1: Check stop-losses, take-profits, and time-exits in PARALLEL
     const openTrades = store.trades.filter((t) => t.status === "open");
-    if (config.stopLossPercent > 0 && openTrades.length > 0) {
+    if (openTrades.length > 0) {
       const priceChecks = await Promise.allSettled(
         openTrades.map((t) => fetchCurrentPrice(t.tokenId))
       );
@@ -115,8 +118,16 @@ export async function POST(req: Request) {
         if (price === null) continue;
         const idx = store.trades.findIndex((t) => t.id === openTrades[i].id);
         if (idx === -1) continue;
-        const updated = checkStopLoss(store.trades[idx], price, config);
-        if (updated.status === "stopped_out") {
+
+        let updated = store.trades[idx];
+        // Check stop-loss
+        updated = checkStopLoss(updated, price, config);
+        // Check take-profit
+        if (updated.status === "open") updated = checkTakeProfit(updated, price, config);
+        // Check time-based exit
+        if (updated.status === "open") updated = checkTimeExit(updated, price, config);
+
+        if (updated.status !== "open") {
           store.trades[idx] = updated;
           stoppedTrades.push(updated);
         }
@@ -228,18 +239,26 @@ export async function POST(req: Request) {
           analysis = analyzeJson.data;
         }
 
+        // Calculate edge score
+        const modelProb = analysis.predictedProbability / 100;
+        const marketProb = opp.gammaProbability;
+        const liqScore = Math.min(opp.liquidity / 10000, 1);
+        const edgeScore = calculateEdgeScore(modelProb, marketProb, liqScore);
+
         const decision = shouldTakeTrade(
           analysis,
           config,
           store.portfolio,
-          openPositionCount + tradesThisRun
+          openPositionCount + tradesThisRun,
+          edgeScore
         );
         if (!decision.take) continue;
 
         const betDollars = calculatePositionSize(
           store.portfolio.cashBalance,
           analysis.edge,
-          config
+          config,
+          store.portfolio.totalValue
         );
 
         const asks = await fetchAsks(opp.tokenId);
@@ -257,7 +276,8 @@ export async function POST(req: Request) {
           shares,
           config,
           slippage.slippagePercent,
-          opp.strategyType
+          opp.strategyType,
+          edgeScore
         );
         store.trades.unshift(trade);
         newTrades.push(trade);

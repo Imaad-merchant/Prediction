@@ -8,7 +8,8 @@ import EquityCurve from "@/components/dashboard/EquityCurve";
 import TradeHistory from "@/components/dashboard/TradeHistory";
 import ActivePositions from "@/components/dashboard/ActivePositions";
 import TradingControls from "@/components/dashboard/TradingControls";
-import { Loader2, BarChart2, CheckCircle, AlertTriangle, RefreshCw } from "lucide-react";
+import { getBestWorstTrade } from "@/lib/trading";
+import { Loader2, BarChart2, CheckCircle, AlertTriangle, RefreshCw, Trophy, Skull } from "lucide-react";
 
 const STORAGE_KEY = "polypredict_trades_store";
 
@@ -78,10 +79,10 @@ export default function DashboardPage() {
     } catch {}
   }, [store.trades]);
 
-  // Auto-poll prices every 30 seconds
+  // Auto-poll prices every 15 seconds
   useEffect(() => {
     fetchLivePrices();
-    pollRef.current = setInterval(fetchLivePrices, 30000);
+    pollRef.current = setInterval(fetchLivePrices, 15000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -121,6 +122,20 @@ export default function DashboardPage() {
     setStore(fresh);
     setLastResult(null);
     setLivePrices({});
+  };
+
+  const handleClosePosition = async (tradeId: string, currentPrice: number) => {
+    try {
+      const res = await fetch("/api/close-position", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ store, tradeId, currentPrice }),
+      });
+      const json = await res.json();
+      if (!json.error && json.data?.store) {
+        setStore(json.data.store);
+      }
+    } catch {}
   };
 
   const handleAutoTrade = async () => {
@@ -220,6 +235,39 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Best/Worst Trade Bar */}
+      {store.trades.filter((t) => t.pnl !== null).length > 0 && (() => {
+        const { best, worst } = getBestWorstTrade(store.trades);
+        return (
+          <div className="mb-4 grid grid-cols-2 gap-3">
+            {best && best.pnl !== null && (
+              <div className="flex items-center gap-2 p-2.5 rounded-lg border border-gray-800 bg-gray-900/50">
+                <Trophy className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[10px] text-gray-500">Best Trade</p>
+                  <p className="text-xs text-gray-300 truncate">{best.question}</p>
+                </div>
+                <span className="text-sm font-mono font-bold text-emerald-400 ml-auto flex-shrink-0">
+                  +${best.pnl.toFixed(2)}
+                </span>
+              </div>
+            )}
+            {worst && worst.pnl !== null && (
+              <div className="flex items-center gap-2 p-2.5 rounded-lg border border-gray-800 bg-gray-900/50">
+                <Skull className="w-4 h-4 text-red-400 flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[10px] text-gray-500">Worst Trade</p>
+                  <p className="text-xs text-gray-300 truncate">{worst.question}</p>
+                </div>
+                <span className="text-sm font-mono font-bold text-red-400 ml-auto flex-shrink-0">
+                  ${worst.pnl.toFixed(2)}
+                </span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Portfolio Overview — with live data */}
       <div className="mb-6">
         <PortfolioOverview
@@ -249,7 +297,7 @@ export default function DashboardPage() {
             </span>
           )}
         </div>
-        <ActivePositions trades={store.trades} livePrices={livePrices} takerFeePercent={store.config.takerFeePercent} />
+        <ActivePositions trades={store.trades} livePrices={livePrices} takerFeePercent={store.config.takerFeePercent} onClose={handleClosePosition} />
       </div>
 
       {/* Trade History */}
