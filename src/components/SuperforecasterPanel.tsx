@@ -135,7 +135,7 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
         const stockRes = await fetch("/api/stock-data", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbol: ticker, range: "3mo", interval: "1d" }),
+          body: JSON.stringify({ symbol: ticker, range: "6mo", interval: "1d" }),
         });
         const stockJson = await stockRes.json();
         if (!stockJson.error) {
@@ -400,6 +400,34 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
               <span className="text-gray-500">Resistance: <span className="text-red-400 font-mono">${(stockIndicators as Record<string, number[]>).resistance.join(", $")}</span></span>
             </div>
           )}
+
+          {/* Strategy Signals */}
+          <div className="mt-3 border-t border-gray-700 pt-3">
+            <h5 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Strategy Signals</h5>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {[
+                { name: "Turtle", value: (stockIndicators as Record<string, Record<string, string>>).turtle?.signal },
+                { name: "Dual Thrust", value: (stockIndicators as Record<string, Record<string, string>>).dualThrust?.signal },
+                { name: "R-Breaker", value: (stockIndicators as Record<string, Record<string, string>>).rBreaker?.signal },
+                { name: "Bollinger", value: (stockIndicators as Record<string, string>).bollingerSignal },
+                { name: "Hurst", value: (stockIndicators as Record<string, Record<string, string>>).hurst?.regime },
+                { name: "Dyn Breakout", value: (stockIndicators as Record<string, Record<string, string>>).dynamicBreakout?.signal },
+                { name: "MA Cross", value: (stockIndicators as Record<string, string>).maCross },
+                { name: "MACD Cross", value: (stockIndicators as Record<string, string>).macdCross },
+              ].map((s) => {
+                const v = s.value || "neutral";
+                const isBull = v.includes("long") || v.includes("bullish") || v.includes("golden") || v.includes("trending");
+                const isBear = v.includes("short") || v.includes("bearish") || v.includes("death") || v.includes("overbought");
+                const color = isBull ? "text-emerald-400" : isBear ? "text-red-400" : "text-gray-500";
+                return (
+                  <div key={s.name} className="bg-gray-900/50 rounded p-1.5">
+                    <span className="text-gray-600 text-[10px]">{s.name}</span>
+                    <p className={`font-bold text-[11px] ${color}`}>{v.replace(/_/g, " ").toUpperCase()}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 

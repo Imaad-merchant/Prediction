@@ -188,6 +188,165 @@ function computeIndicators(candles: Candle[]) {
   // Z-score from VWAP
   const zScore = lastATR && lastATR > 0 ? (lastClose - lastVWAP) / lastATR : 0;
 
+  // === QUANTRESEARCH STRATEGIES ===
+
+  // 1. TURTLE TRADING (Richard Dennis) — Donchian Channel breakout
+  const turtleLong = 20;
+  const turtleShort = 10;
+  const donchianHigh20 = highs.length >= turtleLong ? Math.max(...highs.slice(-turtleLong)) : null;
+  const donchianLow10 = lows.length >= turtleShort ? Math.min(...lows.slice(-turtleShort)) : null;
+  let turtleSignal = "neutral";
+  if (donchianHigh20 && lastClose >= donchianHigh20) turtleSignal = "long_entry";
+  else if (donchianLow10 && lastClose <= donchianLow10) turtleSignal = "exit_long";
+  const turtleUnitSize = lastATR && lastATR > 0 ? round(lastClose * 0.01 / lastATR) : null; // 1% risk per ATR unit
+
+  // 2. DUAL THRUST (Michael Chalek) — Range breakout
+  const dtN = 4;
+  let dualThrustSignal = "neutral";
+  let dtBuyLine: number | null = null;
+  let dtSellLine: number | null = null;
+  if (candles.length > dtN) {
+    const dtSlice = candles.slice(-dtN - 1, -1);
+    const dtHH = Math.max(...dtSlice.map((c) => c.high));
+    const dtHC = Math.max(...dtSlice.map((c) => c.close));
+    const dtLC = Math.min(...dtSlice.map((c) => c.close));
+    const dtLL = Math.min(...dtSlice.map((c) => c.low));
+    const dtRange = Math.max(dtHH - dtLC, dtHC - dtLL);
+    const todayOpen = candles[candles.length - 1].open;
+    dtBuyLine = round(todayOpen + 0.5 * dtRange);
+    dtSellLine = round(todayOpen - 0.5 * dtRange);
+    if (lastClose > (dtBuyLine ?? Infinity)) dualThrustSignal = "long";
+    else if (lastClose < (dtSellLine ?? -Infinity)) dualThrustSignal = "short";
+  }
+
+  // 3. R-BREAKER (Richard Saidenberg) — Pivot-based 7-level strategy
+  let rBreaker = null;
+  if (candles.length >= 2) {
+    const yH = candles[candles.length - 2].high;
+    const yL = candles[candles.length - 2].low;
+    const yC = candles[candles.length - 2].close;
+    const pivot = (yH + yL + yC) / 3;
+    const bBreak = yH + 2 * (pivot - yL);     // buy breakout
+    const sSetup = pivot + (yH - yL);          // sell setup (resistance)
+    const sEnter = 2 * pivot - yL;             // sell enter
+    const bEnter = 2 * pivot - yH;             // buy enter
+    const bSetup = pivot - (yH - yL);          // buy setup (support)
+    const sBreak = yL - 2 * (yH - pivot);     // sell breakout
+
+    let rSignal = "neutral";
+    if (lastClose > bBreak) rSignal = "breakout_long";
+    else if (lastClose < sBreak) rSignal = "breakout_short";
+    else if (lastClose > sSetup && lastClose < sEnter) rSignal = "reversal_short_zone";
+    else if (lastClose < bSetup && lastClose > bEnter) rSignal = "reversal_long_zone";
+
+    rBreaker = {
+      pivot: round(pivot),
+      buyBreak: round(bBreak),
+      sellBreak: round(sBreak),
+      sellSetup: round(sSetup),
+      sellEnter: round(sEnter),
+      buyEnter: round(bEnter),
+      buySetup: round(bSetup),
+      signal: rSignal,
+    };
+  }
+
+  // 4. BOLLINGER BAND STRATEGY — Mean reversion signals
+  let bbSignal = "neutral";
+  if (lastBBUpper && lastBBLower) {
+    const prevClose = closes[closes.length - 2];
+    if (lastClose > (lastBBLower ?? 0) && prevClose < (lastBBLower ?? 0)) bbSignal = "long_reversal";
+    else if (lastClose < (lastBBUpper ?? 0) && prevClose > (lastBBUpper ?? 0)) bbSignal = "short_reversal";
+    else if (lastClose > (lastBBUpper ?? 0)) bbSignal = "overbought";
+    else if (lastClose < (lastBBLower ?? 0)) bbSignal = "oversold";
+    // Squeeze detection
+    const bbWidth = lastBBUpper && lastBBLower ? (lastBBUpper - lastBBLower) / ((lastBBUpper + lastBBLower) / 2) : 0;
+    if (bbWidth < 0.03) bbSignal += "_squeeze";
+  }
+
+  // 5. HURST EXPONENT — Mean reversion vs trend detection
+  let hurstExponent: number | null = null;
+  let hurstRegime = "unknown";
+  if (closes.length >= 100) {
+    const logPrices = closes.slice(-100).map(Math.log);
+    const lags = Array.from({ length: 20 }, (_, i) => i + 2);
+    const taus: number[] = [];
+    for (const lag of lags) {
+      const diffs = logPrices.slice(lag).map((v, i) => v - logPrices[i]);
+      const variance = diffs.reduce((a, d) => a + d * d, 0) / diffs.length;
+      taus.push(Math.sqrt(Math.sqrt(variance)));
+    }
+    // Linear regression on log-log
+    const logLags = lags.map(Math.log);
+    const logTaus = taus.map(Math.log);
+    const n = logLags.length;
+    const sumX = logLags.reduce((a, b) => a + b, 0);
+    const sumY = logTaus.reduce((a, b) => a + b, 0);
+    const sumXY = logLags.reduce((a, x, i) => a + x * logTaus[i], 0);
+    const sumX2 = logLags.reduce((a, x) => a + x * x, 0);
+    hurstExponent = round((n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX) * 2);
+    if (hurstExponent !== null) {
+      if (hurstExponent < 0.4) hurstRegime = "mean_reverting";
+      else if (hurstExponent > 0.6) hurstRegime = "trending";
+      else hurstRegime = "random_walk";
+    }
+  }
+
+  // 6. DYNAMIC BREAKOUT II (George Pruitt) — Adaptive Donchian
+  let dynamicBreakout = null;
+  if (candles.length >= 25) {
+    let lookback = 20;
+    const todayVol = std(closes.slice(-lookback));
+    const yesterdayVol = std(closes.slice(-lookback - 1, -1));
+    if (yesterdayVol > 0) {
+      const deltaVol = (todayVol / yesterdayVol - 1);
+      lookback = Math.min(60, Math.max(20, Math.round(lookback * (1 + deltaVol))));
+    }
+    const dbHH = Math.max(...highs.slice(-lookback));
+    const dbLL = Math.min(...lows.slice(-lookback));
+    const dbMa = closes.slice(-lookback).reduce((a, b) => a + b, 0) / lookback;
+    const dbStd = std(closes.slice(-lookback));
+    const dbUpper = dbMa + 2 * dbStd;
+    const dbLower = dbMa - 2 * dbStd;
+    let dbSignal = "neutral";
+    if (lastClose > dbHH && lastClose > dbUpper) dbSignal = "breakout_long";
+    else if (lastClose < dbLL && lastClose < dbLower) dbSignal = "breakout_short";
+    dynamicBreakout = {
+      lookback,
+      channelHigh: round(dbHH),
+      channelLow: round(dbLL),
+      bbUpper: round(dbUpper),
+      bbLower: round(dbLower),
+      signal: dbSignal,
+    };
+  }
+
+  // 7. MA CROSS signals
+  let maCrossSignal = "neutral";
+  if (sma20.length >= 2 && sma50.length >= 2) {
+    const prev20 = sma20[sma20.length - 2];
+    const prev50 = sma50[sma50.length - 2];
+    if (lastSMA20 && lastSMA50 && prev20 && prev50) {
+      if (prev20 <= prev50 && lastSMA20 > lastSMA50) maCrossSignal = "golden_cross";
+      else if (prev20 >= prev50 && lastSMA20 < lastSMA50) maCrossSignal = "death_cross";
+      else if (lastSMA20 > lastSMA50) maCrossSignal = "bullish_aligned";
+      else maCrossSignal = "bearish_aligned";
+    }
+  }
+
+  // 8. MACD cross signal
+  let macdCrossSignal = "neutral";
+  if (macdData.macdLine.length >= 2 && macdData.signal.length >= 2) {
+    const prevMACD = macdData.macdLine[macdData.macdLine.length - 2];
+    const prevSignal = macdData.signal[macdData.signal.length - 2];
+    if (lastMACD !== null && lastSignal !== null && prevMACD !== null && prevSignal !== null) {
+      if (prevMACD <= prevSignal && lastMACD > lastSignal) macdCrossSignal = "bullish_cross";
+      else if (prevMACD >= prevSignal && lastMACD < lastSignal) macdCrossSignal = "bearish_cross";
+      else if (lastMACD > 0) macdCrossSignal = "bullish";
+      else macdCrossSignal = "bearish";
+    }
+  }
+
   return {
     candles,
     indicators: {
@@ -216,8 +375,35 @@ function computeIndicators(candles: Candle[]) {
       zScore: round(zScore),
       support: pivots.support.map((v) => round(v)),
       resistance: pivots.resistance.map((v) => round(v)),
+      // QuantResearch Strategies
+      turtle: {
+        donchianHigh20: round(donchianHigh20),
+        donchianLow10: round(donchianLow10),
+        signal: turtleSignal,
+        unitSize: turtleUnitSize,
+      },
+      dualThrust: {
+        buyLine: dtBuyLine,
+        sellLine: dtSellLine,
+        signal: dualThrustSignal,
+      },
+      rBreaker,
+      bollingerSignal: bbSignal,
+      hurst: {
+        exponent: hurstExponent,
+        regime: hurstRegime,
+      },
+      dynamicBreakout,
+      maCross: maCrossSignal,
+      macdCross: macdCrossSignal,
     },
   };
+}
+
+function std(data: number[]): number {
+  if (data.length < 2) return 0;
+  const mean = data.reduce((a, b) => a + b, 0) / data.length;
+  return Math.sqrt(data.reduce((a, v) => a + (v - mean) ** 2, 0) / data.length);
 }
 
 function round(v: number | null | undefined): number | null {

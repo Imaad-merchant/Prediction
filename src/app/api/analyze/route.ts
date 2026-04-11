@@ -61,16 +61,29 @@ ${stockData ? `
    - Trend: ${stockData.indicators?.trend}
    - Support: ${stockData.indicators?.support?.join(', ')} | Resistance: ${stockData.indicators?.resistance?.join(', ')}
 
-   STRATEGIES TO APPLY:
-   a) TREND ANALYSIS: Is price above/below SMA20 and SMA50? Golden/death cross? EMA alignment?
-   b) MOMENTUM: RSI overbought (>70) or oversold (<30)? MACD crossover direction?
-   c) VOLATILITY REGIME: ATR level relative to price. Bollinger squeeze or expansion? Are we in high or low vol?
-   d) MEAN REVERSION: Z-score from VWAP. If |Z| > 2, mean reversion likely. Price near Bollinger bands?
-   e) VOLUME CONFIRMATION: Is volume confirming the move? Volume ratio > 1.5 = strong conviction.
-   f) SUPPORT/RESISTANCE: Is price near key levels? Breakout or rejection likely?
-   g) ICT CONCEPTS: Look for fair value gaps, order blocks, liquidity sweeps based on the price action.
+   QUANTRESEARCH STRATEGY SIGNALS:
+   - TURTLE TRADING: Donchian 20d High $${stockData.indicators?.turtle?.donchianHigh20} | 10d Low $${stockData.indicators?.turtle?.donchianLow10} | Signal: ${stockData.indicators?.turtle?.signal} | Unit Size: ${stockData.indicators?.turtle?.unitSize}
+   - DUAL THRUST: Buy Line $${stockData.indicators?.dualThrust?.buyLine} | Sell Line $${stockData.indicators?.dualThrust?.sellLine} | Signal: ${stockData.indicators?.dualThrust?.signal}
+   - R-BREAKER: Pivot $${stockData.indicators?.rBreaker?.pivot} | Buy Break $${stockData.indicators?.rBreaker?.buyBreak} | Sell Break $${stockData.indicators?.rBreaker?.sellBreak} | Buy Setup $${stockData.indicators?.rBreaker?.buySetup} | Sell Setup $${stockData.indicators?.rBreaker?.sellSetup} | Signal: ${stockData.indicators?.rBreaker?.signal}
+   - BOLLINGER STRATEGY: ${stockData.indicators?.bollingerSignal}
+   - HURST EXPONENT: ${stockData.indicators?.hurst?.exponent} → Regime: ${stockData.indicators?.hurst?.regime} (< 0.4 = mean reverting, > 0.6 = trending)
+   - DYNAMIC BREAKOUT II: Adaptive lookback ${stockData.indicators?.dynamicBreakout?.lookback}d | Channel $${stockData.indicators?.dynamicBreakout?.channelLow}-$${stockData.indicators?.dynamicBreakout?.channelHigh} | Signal: ${stockData.indicators?.dynamicBreakout?.signal}
+   - MA CROSS: ${stockData.indicators?.maCross} (golden_cross = very bullish, death_cross = very bearish)
+   - MACD CROSS: ${stockData.indicators?.macdCross}
 
-   Use these quant signals to inform your probability estimate. If the data strongly supports or contradicts the market question, weight it heavily.
+   STRATEGIES TO APPLY (in order of importance):
+   a) HURST REGIME: Is this market mean-reverting or trending? This determines which strategies to trust most. Mean-reverting → favor Bollinger/R-Breaker reversals. Trending → favor Turtle/Dual Thrust breakouts.
+   b) TURTLE TRADING (Richard Dennis): If price broke above 20d high = strong trend entry. If below 10d low = exit. Use ATR for position sizing.
+   c) DUAL THRUST (Michael Chalek): Range breakout — if price above buy line = bullish breakout, below sell line = bearish breakdown.
+   d) R-BREAKER (Saidenberg, top 10 strategy 15 years): 7-level pivot system. Breakout long above buy break, breakout short below sell break. Reversals in setup zones.
+   e) DYNAMIC BREAKOUT II (Pruitt): Adaptive Donchian with volatility-adjusted lookback. Confirmed with Bollinger breakout.
+   f) BOLLINGER BANDS: Mean reversion from bands. Squeeze = big move incoming. Overbought/oversold near bands.
+   g) MA CROSS: Golden cross (SMA20 > SMA50) = bullish regime. Death cross = bearish.
+   h) MOMENTUM: RSI overbought (>70) or oversold (<30)? MACD cross direction confirms or contradicts trend.
+   i) VOLUME CONFIRMATION: Volume ratio > 1.5 = strong conviction behind the move.
+   j) ICT CONCEPTS: Fair value gaps, order blocks, liquidity sweeps from price action context.
+
+   IMPORTANT: Synthesize ALL strategy signals into a consensus view. If 5+ strategies agree on direction, weight heavily. If strategies conflict, note the disagreement and reduce confidence.
 ` : ""}
 4. KEY FACTORS: List 3-6 specific factors, each marked as supporting (FOR) or opposing (AGAINST) the outcome, with weight (HIGH/MEDIUM/LOW). Use specific facts, not generalities. ${stockData ? "Include at least 2 factors from the quantitative analysis above." : ""}
 
