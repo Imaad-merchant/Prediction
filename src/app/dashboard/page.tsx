@@ -29,6 +29,13 @@ function saveStore(store: TradesStore) {
   } catch {}
 }
 
+interface Rejection {
+  question: string;
+  reason: string;
+  edge?: number;
+  edgeScore?: number;
+}
+
 interface AutoTradeResult {
   newTrades: number;
   settledTrades: number;
@@ -36,6 +43,7 @@ interface AutoTradeResult {
   tradesAnalyzed: number;
   opportunitiesFound: number;
   strategiesUsed?: { settlementArbitrage: number; expiryConvergence: number };
+  rejections?: Rejection[];
 }
 
 export default function DashboardPage() {
@@ -160,6 +168,7 @@ export default function DashboardPage() {
           tradesAnalyzed: json.data.tradesAnalyzed || 0,
           opportunitiesFound: json.data.opportunitiesFound || 0,
           strategiesUsed: json.data.strategiesUsed,
+          rejections: json.data.rejections || [],
         });
         // Immediately fetch live prices for any new positions
         setTimeout(fetchLivePrices, 1000);
@@ -219,19 +228,45 @@ export default function DashboardPage() {
 
       {/* Last Run Result */}
       {lastResult && (
-        <div className="mb-4 p-3 rounded-lg border border-gray-800 bg-gray-900/50 flex items-center gap-3 text-sm">
-          <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-          <span className="text-gray-300">
-            Scanned {lastResult.opportunitiesFound} opportunities, analyzed {lastResult.tradesAnalyzed},
-            placed {lastResult.newTrades} new trade{lastResult.newTrades !== 1 ? "s" : ""}.
-            {lastResult.settledTrades > 0 && ` Settled ${lastResult.settledTrades} position${lastResult.settledTrades !== 1 ? "s" : ""}.`}
-            {lastResult.stoppedTrades > 0 && ` Stopped out ${lastResult.stoppedTrades} position${lastResult.stoppedTrades !== 1 ? "s" : ""}.`}
-            {lastResult.strategiesUsed && (
-              <span className="text-gray-500 ml-1">
-                (Arb: {lastResult.strategiesUsed.settlementArbitrage}, Expiry: {lastResult.strategiesUsed.expiryConvergence})
-              </span>
-            )}
-          </span>
+        <div className="mb-4 space-y-2">
+          <div className="p-3 rounded-lg border border-gray-800 bg-gray-900/50 flex items-center gap-3 text-sm">
+            <CheckCircle className={`w-4 h-4 flex-shrink-0 ${lastResult.newTrades > 0 ? "text-emerald-400" : "text-amber-400"}`} />
+            <span className="text-gray-300">
+              Scanned {lastResult.opportunitiesFound} opportunities, analyzed {lastResult.tradesAnalyzed},
+              placed <span className={lastResult.newTrades > 0 ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>{lastResult.newTrades}</span> new trade{lastResult.newTrades !== 1 ? "s" : ""}.
+              {lastResult.settledTrades > 0 && ` Settled ${lastResult.settledTrades} position${lastResult.settledTrades !== 1 ? "s" : ""}.`}
+              {lastResult.stoppedTrades > 0 && ` Stopped out ${lastResult.stoppedTrades} position${lastResult.stoppedTrades !== 1 ? "s" : ""}.`}
+              {lastResult.strategiesUsed && (
+                <span className="text-gray-500 ml-1">
+                  (Arb: {lastResult.strategiesUsed.settlementArbitrage}, Expiry: {lastResult.strategiesUsed.expiryConvergence})
+                </span>
+              )}
+            </span>
+          </div>
+
+          {/* Rejection reasons */}
+          {lastResult.rejections && lastResult.rejections.length > 0 && (
+            <details className="group">
+              <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300 transition-colors pl-1">
+                {lastResult.rejections.length} trade{lastResult.rejections.length !== 1 ? "s" : ""} rejected — click to see why
+              </summary>
+              <div className="mt-1.5 space-y-1">
+                {lastResult.rejections.map((r, i) => (
+                  <div key={i} className="flex items-start gap-2 p-2 rounded-md bg-gray-800/30 border border-gray-800 text-xs">
+                    <AlertTriangle className="w-3 h-3 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="text-gray-400 truncate">{r.question}</p>
+                      <p className="text-gray-500">
+                        {r.reason}
+                        {r.edge != null && <span className="ml-2 text-gray-600">Edge: {r.edge.toFixed(1)}pp</span>}
+                        {r.edgeScore != null && <span className="ml-1 text-gray-600">Score: {r.edgeScore.toFixed(3)}</span>}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       )}
 

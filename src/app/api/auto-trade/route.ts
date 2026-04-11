@@ -115,6 +115,7 @@ export async function POST(req: Request) {
     const newTrades: Trade[] = [];
     const settledTrades: Trade[] = [];
     const stoppedTrades: Trade[] = [];
+    const rejections: Array<{ question: string; reason: string; edge?: number; edgeScore?: number }> = [];
     let tradesAnalyzed = 0;
 
     // Step 1: Check stop-losses, take-profits, and time-exits in PARALLEL
@@ -256,19 +257,29 @@ export async function POST(req: Request) {
           if (calibrateJson.error) continue;
           const cal: CalibrationResult = calibrateJson.data;
 
-          // New edge formula: raw_edge * confidence_discount * liquidity_discount
+          // Edge formula: raw_edge * confidence_discount * liquidity_discount
+          // edgeScore here is the discounted edge (0-1 scale) used for sizing
+          const rawEdgePp = cal.edge * 100; // percentage points
           const calibratedEdge = cal.edge * cal.confidence_discount * cal.liquidity_discount;
-          edgeScore = Math.round(calibratedEdge * 1000) / 1000;
+          edgeScore = Math.round(Math.abs(calibratedEdge) * 1000) / 1000;
 
           // Convert CalibrationResult → AnalysisResult for downstream compatibility
-          const edgePp = cal.edge * 100; // convert to percentage points
+          // Recommendation thresholds tuned for Polymarket reality (3-8pp edges are common)
+          const absEdgePp = Math.abs(rawEdgePp);
+          let recommendation: "BUY YES" | "BUY NO" | "HOLD" | "AVOID";
+          if (absEdgePp >= 3 && cal.confidence_discount >= 0.4) {
+            recommendation = rawEdgePp > 0 ? "BUY YES" : "BUY NO";
+          } else if (absEdgePp >= 2) {
+            recommendation = "HOLD";
+          } else {
+            recommendation = "AVOID";
+          }
+
           analysis = {
             predictedProbability: cal.calibrated_p * 100,
             confidence: cal.confidence_discount >= 0.7 ? "High" : cal.confidence_discount >= 0.5 ? "Medium" : "Low",
-            recommendation: Math.abs(edgePp) > 10 && cal.confidence_discount >= 0.5
-              ? (edgePp > 0 ? "BUY YES" : "BUY NO")
-              : Math.abs(edgePp) > 5 ? "HOLD" : "AVOID",
-            edge: Math.round(edgePp * 10) / 10,
+            recommendation,
+            edge: Math.round(rawEdgePp * 10) / 10,
             reasoning: {
               decomposition: [`Calibrated from ${cal.source_count} source(s)`],
               baseRate: `Sources ${cal.sources_agree ? "agree" : "disagree"} — confidence discount: ${cal.confidence_discount}`,
@@ -296,7 +307,10 @@ export async function POST(req: Request) {
           openPositionCount + tradesThisRun,
           edgeScore
         );
-        if (!decision.take) continue;
+        if (!decision.take) {
+          rejections.push({ question: opp.question.slice(0, 80), reason: decision.reason, edge: analysis.edge, edgeScore });
+          continue;
+        }
 
         const betDollars = calculatePositionSize(
           store.portfolio.cashBalance,
@@ -308,11 +322,17 @@ export async function POST(req: Request) {
         const asks = await fetchAsks(opp.tokenId);
         const slippage = estimateSlippage(asks, betDollars);
         const slippageCheck = passesSlippageGate(slippage, config);
-        if (!slippageCheck.pass) continue;
+        if (!slippageCheck.pass) {
+          rejections.push({ question: opp.question.slice(0, 80), reason: slippageCheck.reason, edge: analysis.edge, edgeScore });
+          continue;
+        }
 
         const effectivePrice = slippage.vwap > 0 ? slippage.vwap : opp.realAskPrice;
         const shares = Math.floor(betDollars / effectivePrice);
-        if (shares < 1) continue;
+        if (shares < 1) {
+          rejections.push({ question: opp.question.slice(0, 80), reason: `Position size too small ($${betDollars.toFixed(2)} → 0 shares)`, edge: analysis.edge, edgeScore });
+          continue;
+        }
 
         const trade = simulateTradeEntry(
           { ...opp, realAskPrice: effectivePrice },
@@ -343,6 +363,7 @@ export async function POST(req: Request) {
         newTrades,
         settledTrades,
         stoppedTrades,
+        rejections,
         tradesAnalyzed,
         opportunitiesFound: opportunities.length,
         strategiesUsed: {

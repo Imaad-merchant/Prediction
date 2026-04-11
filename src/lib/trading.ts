@@ -28,7 +28,7 @@ export function defaultTradesStore(): TradesStore {
       slippageTolerancePercent: 5,
       takerFeePercent: 2,
       minConfidence: 0.5,
-      minEdge: 3,
+      minEdge: 2,
       maxPositionPercent: 5,
       takeProfitPercent: 80,
       portfolioStopPercent: 15,
@@ -152,9 +152,9 @@ export function shouldTakeTrade(
     return { take: false, reason: `Edge too small (${analysis.edge.toFixed(1)}pp < ${config.minEdge}pp)` };
   }
 
-  // Edge score threshold: 0.08
-  if (edgeScore < 0.08) {
-    return { take: false, reason: `Edge score too low (${edgeScore.toFixed(3)} < 0.08)` };
+  // Edge score threshold: 0.01 (calibrated edge already discounted by confidence + liquidity)
+  if (edgeScore < 0.01) {
+    return { take: false, reason: `Edge score too low (${edgeScore.toFixed(3)} < 0.01)` };
   }
 
   const confidenceMap: Record<string, number> = { High: 1, Medium: 0.6, Low: 0.3 };
