@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 const GAMMA_API = "https://gamma-api.polymarket.com";
 const CLOB_API = "https://clob.polymarket.com";
 
-// Fetch orderbook with timeout
 async function fetchAskPrice(
   tokenId: string,
   fallbackPrice: number
@@ -28,25 +27,48 @@ async function fetchAskPrice(
 
 export const maxDuration = 30;
 
-export async function GET() {
+async function fetchGammaMarkets(
+  sort: string,
+  limit: number
+): Promise<Record<string, unknown>[]> {
   try {
-    // Fetch active markets ending soon, sorted by volume
     const params = new URLSearchParams({
       closed: "false",
       active: "true",
-      limit: "40",
-      order: "volume",
+      limit: String(limit),
+      order: sort,
       ascending: "false",
     });
-
     const res = await fetch(`${GAMMA_API}/markets?${params}`, {
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) throw new Error(`Gamma API error: ${res.status}`);
-    const markets = await res.json();
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function GET() {
+  try {
+    // Fetch from multiple sort orders in parallel for wider coverage
+    const [byVolume, byLiquidity] = await Promise.all([
+      fetchGammaMarkets("volume", 60),
+      fetchGammaMarkets("liquidity", 60),
+    ]);
+
+    // Merge and deduplicate
+    const seen = new Set<string>();
+    const allMarkets: Record<string, unknown>[] = [];
+    for (const m of [...byVolume, ...byLiquidity]) {
+      const id = String(m.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      allMarkets.push(m);
+    }
 
     const now = Date.now();
-    const maxHours = 72;
+    const maxHours = 168; // 7 days
 
     // Pre-filter candidates before any CLOB calls
     const candidates: Array<{
@@ -60,7 +82,7 @@ export async function GET() {
       liquidity: number;
     }> = [];
 
-    for (const m of markets) {
+    for (const m of allMarkets) {
       const endDate = (m.endDate || m.end_date_iso) as string;
       if (!endDate) continue;
 
@@ -86,11 +108,12 @@ export async function GET() {
       let gammaProbability: number;
       let tokenId: string;
 
-      if (yesProb >= 0.85 && yesProb <= 0.97) {
+      // Wide range: 0.70-0.995
+      if (yesProb >= 0.70 && yesProb <= 0.995) {
         side = "YES";
         gammaProbability = yesProb;
         tokenId = clobTokenIds[0];
-      } else if (noProb >= 0.85 && noProb <= 0.97) {
+      } else if (noProb >= 0.70 && noProb <= 0.995) {
         side = "NO";
         gammaProbability = noProb;
         tokenId = clobTokenIds[1];
@@ -101,7 +124,7 @@ export async function GET() {
       if (!tokenId) continue;
 
       const volume = Number(m.volume || 0);
-      if (volume < 500) continue;
+      if (volume < 100) continue;
 
       candidates.push({
         market: m,
@@ -115,11 +138,14 @@ export async function GET() {
       });
     }
 
-    // Fetch CLOB prices in parallel (batches of 8)
-    const opportunities = [];
-    const batchSize = 8;
+    // Sort candidates by probability (highest first) for best arb opportunities
+    candidates.sort((a, b) => b.gammaProbability - a.gammaProbability);
 
-    for (let i = 0; i < candidates.length; i += batchSize) {
+    // Fetch CLOB prices in parallel (batches of 10)
+    const opportunities = [];
+    const batchSize = 10;
+
+    for (let i = 0; i < Math.min(candidates.length, 40); i += batchSize) {
       const batch = candidates.slice(i, i + batchSize);
       const prices = await Promise.allSettled(
         batch.map((c) => fetchAskPrice(c.tokenId, c.gammaProbability))
@@ -131,7 +157,8 @@ export async function GET() {
         const realAskPrice =
           priceResult.status === "fulfilled" ? priceResult.value : c.gammaProbability;
 
-        if (realAskPrice >= 0.99) continue;
+        // Allow up to 0.998 — strategy layer decides profitability
+        if (realAskPrice >= 0.998) continue;
 
         const profitPerShare = 1.0 - realAskPrice;
         const edge = profitPerShare / realAskPrice;
@@ -142,13 +169,10 @@ export async function GET() {
         else riskLevel = "High";
 
         opportunities.push({
-          id: String((c.market as Record<string, unknown>).id),
-          question: String((c.market as Record<string, unknown>).question || ""),
-          slug: String(
-            (c.market as Record<string, unknown>).slug ||
-              (c.market as Record<string, unknown>).id
-          ),
-          image: String((c.market as Record<string, unknown>).image || ""),
+          id: String(c.market.id),
+          question: String(c.market.question || ""),
+          slug: String(c.market.slug || c.market.id),
+          image: String(c.market.image || ""),
           endDate: c.endDate,
           gammaProbability: Math.round(c.gammaProbability * 100) / 100,
           realAskPrice: Math.round(realAskPrice * 1000) / 1000,
@@ -166,7 +190,7 @@ export async function GET() {
 
     opportunities.sort((a, b) => b.profitPerShare - a.profitPerShare);
 
-    return NextResponse.json({ data: opportunities.slice(0, 20) });
+    return NextResponse.json({ data: opportunities.slice(0, 25) });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to scan opportunities";

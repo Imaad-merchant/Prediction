@@ -201,7 +201,7 @@ export function scoreSettlementArbitrage(
     grossEdge: Math.round(grossEdge * 100) / 100,
     netEdge: Math.round(netEdge * 100) / 100,
     confidence: Math.round(confidence * 100) / 100,
-    viable: netEdge > 0 && price >= 0.95 && price <= 0.995,
+    viable: netEdge > 0 && price >= 0.90 && price <= 0.995,
   };
 }
 
