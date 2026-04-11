@@ -70,6 +70,12 @@ export interface AnalysisResult {
     keyFactors: KeyFactor[];
     newsContext: string;
     uncertainties: string[];
+    strategyScorecard?: Array<{ strategy: string; signal: string; score: number }>;
+    strategyConsensus?: {
+      totalScore: number;
+      bias: string;
+      summary: string;
+    };
   };
   riskAssessment: {
     liquidityRisk: "Low" | "Medium" | "High";

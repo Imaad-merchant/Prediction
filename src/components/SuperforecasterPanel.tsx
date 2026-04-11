@@ -439,6 +439,53 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
         </Button>
       </div>
 
+      {/* Strategy Consensus */}
+      {analysis.reasoning.strategyConsensus && (
+        <div className="bg-gray-800/30 rounded-xl border border-gray-700 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+              <Target className="w-4 h-4 text-cyan-400" />
+              Strategy Consensus
+            </h4>
+            <div className="flex items-center gap-2">
+              <span className={`text-lg font-bold font-mono ${
+                analysis.reasoning.strategyConsensus.totalScore >= 4 ? "text-emerald-400" :
+                analysis.reasoning.strategyConsensus.totalScore >= 2 ? "text-emerald-300" :
+                analysis.reasoning.strategyConsensus.totalScore <= -4 ? "text-red-400" :
+                analysis.reasoning.strategyConsensus.totalScore <= -2 ? "text-red-300" :
+                "text-gray-400"
+              }`}>
+                {analysis.reasoning.strategyConsensus.totalScore > 0 ? "+" : ""}{analysis.reasoning.strategyConsensus.totalScore}
+              </span>
+              <Badge variant={
+                analysis.reasoning.strategyConsensus.bias.includes("BULLISH") ? "success" :
+                analysis.reasoning.strategyConsensus.bias.includes("BEARISH") ? "destructive" :
+                "outline"
+              }>
+                {analysis.reasoning.strategyConsensus.bias}
+              </Badge>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">{analysis.reasoning.strategyConsensus.summary}</p>
+
+          {analysis.reasoning.strategyScorecard && (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+              {analysis.reasoning.strategyScorecard.map((s, i) => (
+                <div key={i} className="bg-gray-900/50 rounded p-1.5 text-center">
+                  <p className="text-[9px] text-gray-600 truncate" title={s.strategy}>{s.strategy}</p>
+                  <p className={`text-sm font-bold font-mono ${
+                    s.score > 0 ? "text-emerald-400" : s.score < 0 ? "text-red-400" : "text-gray-500"
+                  }`}>
+                    {s.score > 0 ? "+" : ""}{s.score}
+                  </p>
+                  <p className="text-[8px] text-gray-600 truncate" title={s.signal}>{s.signal}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Detailed Reasoning */}
       <div className="space-y-2">
         <CollapsibleSection title="Question Decomposition" icon={Target} defaultOpen>

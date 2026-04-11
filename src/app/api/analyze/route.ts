@@ -71,21 +71,34 @@ ${stockData ? `
    - MA CROSS: ${stockData.indicators?.maCross} (golden_cross = very bullish, death_cross = very bearish)
    - MACD CROSS: ${stockData.indicators?.macdCross}
 
-   STRATEGIES TO APPLY (in order of importance):
-   a) HURST REGIME: Is this market mean-reverting or trending? This determines which strategies to trust most. Mean-reverting → favor Bollinger/R-Breaker reversals. Trending → favor Turtle/Dual Thrust breakouts.
-   b) TURTLE TRADING (Richard Dennis): If price broke above 20d high = strong trend entry. If below 10d low = exit. Use ATR for position sizing.
-   c) DUAL THRUST (Michael Chalek): Range breakout — if price above buy line = bullish breakout, below sell line = bearish breakdown.
-   d) R-BREAKER (Saidenberg, top 10 strategy 15 years): 7-level pivot system. Breakout long above buy break, breakout short below sell break. Reversals in setup zones.
-   e) DYNAMIC BREAKOUT II (Pruitt): Adaptive Donchian with volatility-adjusted lookback. Confirmed with Bollinger breakout.
-   f) BOLLINGER BANDS: Mean reversion from bands. Squeeze = big move incoming. Overbought/oversold near bands.
-   g) MA CROSS: Golden cross (SMA20 > SMA50) = bullish regime. Death cross = bearish.
-   h) MOMENTUM: RSI overbought (>70) or oversold (<30)? MACD cross direction confirms or contradicts trend.
-   i) VOLUME CONFIRMATION: Volume ratio > 1.5 = strong conviction behind the move.
-   j) ICT CONCEPTS: Fair value gaps, order blocks, liquidity sweeps from price action context.
+   STRATEGY SCORING — You MUST score each strategy individually before forming your bias.
+   For each strategy, assign: BULLISH (+1), NEUTRAL (0), or BEARISH (-1), then sum for consensus.
 
-   IMPORTANT: Synthesize ALL strategy signals into a consensus view. If 5+ strategies agree on direction, weight heavily. If strategies conflict, note the disagreement and reduce confidence.
+   Score these 10 strategies:
+   1. HURST REGIME: ${stockData.indicators?.hurst?.regime}. If trending → trust breakout strategies. If mean-reverting → trust reversal strategies. Score the regime's implication for the market question.
+   2. TURTLE (Dennis): Signal=${stockData.indicators?.turtle?.signal}. Price vs 20d high ($${stockData.indicators?.turtle?.donchianHigh20}) and 10d low ($${stockData.indicators?.turtle?.donchianLow10}). Long entry = +1, exit = -1, neutral = 0.
+   3. DUAL THRUST (Chalek): Signal=${stockData.indicators?.dualThrust?.signal}. Buy line $${stockData.indicators?.dualThrust?.buyLine}, sell line $${stockData.indicators?.dualThrust?.sellLine}. Long = +1, short = -1.
+   4. R-BREAKER (Saidenberg): Signal=${stockData.indicators?.rBreaker?.signal}. Pivot $${stockData.indicators?.rBreaker?.pivot}. Breakout long = +1, breakout short = -1, reversal zones = mixed.
+   5. DYNAMIC BREAKOUT (Pruitt): Signal=${stockData.indicators?.dynamicBreakout?.signal}. Adaptive ${stockData.indicators?.dynamicBreakout?.lookback}d channel. Breakout long = +1, short = -1.
+   6. BOLLINGER BANDS: Signal=${stockData.indicators?.bollingerSignal}. Oversold/long reversal = +1, overbought/short reversal = -1. Squeeze = amplify next signal.
+   7. MA CROSS: ${stockData.indicators?.maCross}. Golden cross = +1, death cross = -1, bullish aligned = +0.5, bearish aligned = -0.5.
+   8. MACD CROSS: ${stockData.indicators?.macdCross}. Bullish cross = +1, bearish cross = -1.
+   9. RSI MOMENTUM: RSI=${stockData.indicators?.rsi14}. Oversold (<30) = +1 (bounce likely). Overbought (>70) = -1 (pullback likely). 30-70 = score by direction.
+   10. VOLUME: Ratio=${stockData.indicators?.volumeRatio}x. If > 1.5 and price rising = confirms bull (+0.5). If > 1.5 and price falling = confirms bear (-0.5). Weak volume = reduce conviction.
+
+   CONSENSUS BIAS FORMULA:
+   Sum all 10 scores → Strategy Score (range -10 to +10).
+   - Score >= +4: STRONG BULLISH bias → increase probability estimate
+   - Score +2 to +3: MODERATE BULLISH
+   - Score -1 to +1: MIXED/NEUTRAL → low confidence, favor market price
+   - Score -2 to -3: MODERATE BEARISH
+   - Score <= -4: STRONG BEARISH bias → decrease probability estimate
+
+   You MUST include your strategy scorecard in the response under "reasoning.strategyScorecard" as an array of {strategy, signal, score} objects, plus "strategyConsensus" with the total score and bias label.
+
+   ICT OVERLAY: After scoring, apply ICT concepts (fair value gaps, order blocks, liquidity sweeps) as a final confirmation or contradiction of the consensus.
 ` : ""}
-4. KEY FACTORS: List 3-6 specific factors, each marked as supporting (FOR) or opposing (AGAINST) the outcome, with weight (HIGH/MEDIUM/LOW). Use specific facts, not generalities. ${stockData ? "Include at least 2 factors from the quantitative analysis above." : ""}
+4. KEY FACTORS: List 3-6 specific factors, each marked as supporting (FOR) or opposing (AGAINST) the outcome, with weight (HIGH/MEDIUM/LOW). Use specific facts, not generalities. ${stockData ? "Include at least 3 factors from the strategy scorecard — cite the specific strategy score." : ""}
 
 5. ADJUSTMENT: Starting from the base rate, adjust up or down based on each factor. Show your reasoning for each adjustment. Avoid anchoring too heavily to the current market price -- the market can be wrong.
 
@@ -114,15 +127,26 @@ Return ONLY valid JSON with this exact structure:
       { "factor": "specific factor", "direction": "for" | "against", "weight": "high" | "medium" | "low" }
     ],
     "newsContext": "relevant current events and information",
-    "uncertainties": ["uncertainty 1", "uncertainty 2"]
+    "uncertainties": ["uncertainty 1", "uncertainty 2"],
+    "strategyScorecard": [
+      { "strategy": "Turtle", "signal": "signal description", "score": 0 },
+      { "strategy": "Dual Thrust", "signal": "signal description", "score": 0 }
+    ],
+    "strategyConsensus": {
+      "totalScore": 0,
+      "bias": "STRONG BULLISH" | "MODERATE BULLISH" | "NEUTRAL" | "MODERATE BEARISH" | "STRONG BEARISH",
+      "summary": "1-sentence consensus explanation"
+    }
   },
   "riskAssessment": {
     "liquidityRisk": "Low" | "Medium" | "High",
     "timingRisk": "description of timing risk",
     "marketEfficiency": "description of market efficiency"
   },
-  "summary": "2-3 sentence conclusion with actionable insight"
-}`;
+  "summary": "2-3 sentence conclusion with actionable insight. MUST reference the strategy consensus bias and score."
+}
+
+IMPORTANT: If stock/futures data is provided, the "strategyScorecard" and "strategyConsensus" fields are REQUIRED. Score ALL 10 strategies. The consensus bias MUST directly influence your predictedProbability — don't ignore it.`;
 
     const userPrompt = `Evaluate this prediction market:
 
