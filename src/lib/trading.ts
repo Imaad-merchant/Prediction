@@ -1,4 +1,15 @@
-import type { Trade, TradingConfig, PortfolioState, TradesStore, Opportunity, AnalysisResult } from "./types";
+import type {
+  Trade,
+  TradingConfig,
+  PortfolioState,
+  TradesStore,
+  Opportunity,
+  AnalysisResult,
+  SlippageEstimate,
+  OrderLevel,
+} from "./types";
+
+// === Default Config (mirrors Polymarket_trader defaults) ===
 
 export function defaultTradesStore(): TradesStore {
   return {
@@ -9,6 +20,14 @@ export function defaultTradesStore(): TradesStore {
       mode: "paper",
       isRunning: false,
       lastRunAt: null,
+      strategy: "combined",
+      maxPositions: 5,
+      capitalSplitPercent: 0.2,
+      stopLossPercent: 15,
+      slippageTolerancePercent: 5,
+      takerFeePercent: 2,
+      minConfidence: 0.5,
+      minEdge: 3,
     },
     portfolio: {
       totalValue: 1000,
@@ -26,40 +45,114 @@ export function defaultTradesStore(): TradesStore {
   };
 }
 
+// === Slippage Estimation (from Polymarket_trader/utils/slippage.py) ===
+
+export function estimateSlippage(
+  asks: OrderLevel[],
+  capitalUsd: number
+): SlippageEstimate {
+  if (!asks.length || capitalUsd <= 0) {
+    return {
+      vwap: 0,
+      bestPrice: 0,
+      slippagePercent: 100,
+      fillRatio: 0,
+      unfilledUsd: capitalUsd,
+      liquidityOk: false,
+    };
+  }
+
+  const sorted = [...asks].sort((a, b) => a.price - b.price);
+  const bestPrice = sorted[0].price;
+
+  let filled = 0;
+  let totalCost = 0;
+  let remaining = capitalUsd;
+
+  for (const level of sorted) {
+    const levelValue = level.price * level.size;
+    if (levelValue >= remaining) {
+      const sharesToFill = remaining / level.price;
+      totalCost += sharesToFill * level.price;
+      filled += sharesToFill;
+      remaining = 0;
+      break;
+    } else {
+      totalCost += levelValue;
+      filled += level.size;
+      remaining -= levelValue;
+    }
+  }
+
+  const vwap = filled > 0 ? totalCost / filled : bestPrice;
+  const slippagePercent = bestPrice > 0 ? ((vwap - bestPrice) / bestPrice) * 100 : 0;
+  const fillRatio = capitalUsd > 0 ? (capitalUsd - remaining) / capitalUsd : 0;
+
+  return {
+    vwap,
+    bestPrice,
+    slippagePercent: Math.round(slippagePercent * 100) / 100,
+    fillRatio: Math.round(fillRatio * 100) / 100,
+    unfilledUsd: Math.round(remaining * 100) / 100,
+    liquidityOk: fillRatio >= 0.95 && slippagePercent < 5,
+  };
+}
+
+// === Position Sizing (quarter-Kelly + capital split cap) ===
+
 export function calculatePositionSize(
   cashBalance: number,
   edge: number,
-  maxBetSize: number
+  config: TradingConfig
 ): number {
+  // Capital split: never risk more than X% of balance per position
+  const capitalSplitMax = cashBalance * config.capitalSplitPercent;
+
+  // Quarter-Kelly
   const kellyFraction = 0.25;
-  const raw = cashBalance * (Math.abs(edge) / 100) * kellyFraction;
-  return Math.min(Math.max(Math.round(raw * 100) / 100, 1), maxBetSize);
+  const kellySize = cashBalance * (Math.abs(edge) / 100) * kellyFraction;
+
+  // Take the smallest of: Kelly, capital split, maxBetSize
+  const size = Math.min(kellySize, capitalSplitMax, config.maxBetSize);
+  return Math.max(Math.round(size * 100) / 100, 1);
 }
+
+// === Trade Decision (with configurable thresholds) ===
 
 export function shouldTakeTrade(
   analysis: AnalysisResult,
   config: TradingConfig,
-  portfolio: PortfolioState
+  portfolio: PortfolioState,
+  openPositionCount: number
 ): { take: boolean; reason: string } {
+  // Max positions check
+  if (openPositionCount >= config.maxPositions) {
+    return { take: false, reason: `Max positions reached (${config.maxPositions})` };
+  }
+
   if (analysis.recommendation === "HOLD" || analysis.recommendation === "AVOID") {
     return { take: false, reason: `Recommendation is ${analysis.recommendation}` };
   }
-  if (Math.abs(analysis.edge) < 5) {
-    return { take: false, reason: `Edge too small (${analysis.edge.toFixed(1)}pp)` };
-  }
-  if (analysis.confidence === "Low") {
-    return { take: false, reason: "Low confidence" };
+
+  // Configurable minimum edge
+  if (Math.abs(analysis.edge) < config.minEdge) {
+    return { take: false, reason: `Edge too small (${analysis.edge.toFixed(1)}pp < ${config.minEdge}pp)` };
   }
 
-  // Check daily loss limit
-  const today = new Date().toISOString().split("T")[0];
-  const todayLosses = portfolio.realizedPnl < 0 ? Math.abs(portfolio.realizedPnl) : 0;
-  if (todayLosses >= config.dailyLossLimit) {
-    return { take: false, reason: `Daily loss limit hit ($${todayLosses.toFixed(2)})` };
+  // Configurable confidence threshold
+  const confidenceMap: Record<string, number> = { High: 1, Medium: 0.6, Low: 0.3 };
+  const confScore = confidenceMap[analysis.confidence] ?? 0;
+  if (confScore < config.minConfidence) {
+    return { take: false, reason: `Confidence too low (${analysis.confidence})` };
   }
 
-  // Check cash
-  const posSize = calculatePositionSize(portfolio.cashBalance, analysis.edge, config.maxBetSize);
+  // Daily loss limit
+  if (portfolio.realizedPnl < 0 && Math.abs(portfolio.realizedPnl) >= config.dailyLossLimit) {
+    return { take: false, reason: `Daily loss limit hit ($${Math.abs(portfolio.realizedPnl).toFixed(2)})` };
+  }
+
+  // Cash check with capital split
+  const posSize = calculatePositionSize(portfolio.cashBalance, analysis.edge, config);
   if (posSize > portfolio.cashBalance) {
     return { take: false, reason: `Insufficient cash ($${portfolio.cashBalance.toFixed(2)})` };
   }
@@ -67,11 +160,70 @@ export function shouldTakeTrade(
   return { take: true, reason: `Edge ${analysis.edge.toFixed(1)}pp, ${analysis.confidence} confidence` };
 }
 
+// === Slippage Gate (from Polymarket_trader pre-trade check) ===
+
+export function passesSlippageGate(
+  slippage: SlippageEstimate,
+  config: TradingConfig
+): { pass: boolean; reason: string } {
+  if (slippage.slippagePercent > config.slippageTolerancePercent) {
+    return {
+      pass: false,
+      reason: `Slippage ${slippage.slippagePercent.toFixed(1)}% > tolerance ${config.slippageTolerancePercent}%`,
+    };
+  }
+  if (slippage.fillRatio < 0.8) {
+    return {
+      pass: false,
+      reason: `Insufficient liquidity (fill ratio: ${(slippage.fillRatio * 100).toFixed(0)}%)`,
+    };
+  }
+  return { pass: true, reason: "OK" };
+}
+
+// === Settlement Arbitrage Scoring (from Polymarket_trader/strategies/settlement_arbitrage) ===
+
+export function scoreSettlementArbitrage(
+  price: number,
+  hoursLeft: number,
+  takerFeePercent: number
+): { grossEdge: number; netEdge: number; confidence: number; viable: boolean } {
+  const grossEdge = (1 / price - 1) * 100; // e.g. buy at 0.985 → 1.52% gross
+  const netEdge = grossEdge - takerFeePercent;
+
+  // Confidence: weighted blend of price proximity, time, edge
+  const priceProximity = Math.min((price - 0.95) / 0.05, 1); // higher = closer to $1
+  const timeScore = hoursLeft < 4 ? 1 : hoursLeft < 12 ? 0.8 : hoursLeft < 24 ? 0.6 : 0.4;
+  const edgeScore = Math.min(netEdge / 3, 1);
+  const confidence = priceProximity * 0.4 + timeScore * 0.35 + edgeScore * 0.25;
+
+  return {
+    grossEdge: Math.round(grossEdge * 100) / 100,
+    netEdge: Math.round(netEdge * 100) / 100,
+    confidence: Math.round(confidence * 100) / 100,
+    viable: netEdge > 0 && price >= 0.95 && price <= 0.995,
+  };
+}
+
+// === Trade Entry (with fees and stop-loss) ===
+
 export function simulateTradeEntry(
   opp: Opportunity,
   analysis: AnalysisResult,
-  shares: number
+  shares: number,
+  config: TradingConfig,
+  slippagePercent: number,
+  strategy: "expiry_convergence" | "settlement_arbitrage"
 ): Trade {
+  const cost = opp.realAskPrice * shares;
+  const entryFee = Math.round(cost * (config.takerFeePercent / 100) * 100) / 100;
+
+  // Stop-loss price: entry price * (1 - stopLossPercent/100)
+  const stopLossPrice =
+    config.stopLossPercent > 0
+      ? Math.round(opp.realAskPrice * (1 - config.stopLossPercent / 100) * 1000) / 1000
+      : null;
+
   return {
     id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     marketId: opp.id,
@@ -90,40 +242,81 @@ export function simulateTradeEntry(
     endDate: opp.endDate,
     enteredAt: new Date().toISOString(),
     settledAt: null,
+    strategy,
+    entryFee,
+    exitFee: null,
+    slippageEstimate: slippagePercent,
+    stopLossPrice,
   };
 }
 
-export function checkSettlement(trade: Trade): Trade {
+// === Stop-Loss Check (from Polymarket_trader main._check_stop_losses) ===
+
+export function checkStopLoss(
+  trade: Trade,
+  currentPrice: number,
+  config: TradingConfig
+): Trade {
+  if (trade.status !== "open" || !trade.stopLossPrice || config.stopLossPercent <= 0) {
+    return trade;
+  }
+
+  if (currentPrice <= trade.stopLossPrice) {
+    const cost = trade.entryPrice * trade.shares;
+    const exitFee = Math.round(currentPrice * trade.shares * (config.takerFeePercent / 100) * 100) / 100;
+    const proceeds = currentPrice * trade.shares - exitFee;
+    const pnl = proceeds - cost - trade.entryFee;
+
+    return {
+      ...trade,
+      exitPrice: currentPrice,
+      exitFee,
+      pnl: Math.round(pnl * 100) / 100,
+      pnlPercent: Math.round((pnl / (cost + trade.entryFee)) * 10000) / 100,
+      status: "stopped_out",
+      settledAt: new Date().toISOString(),
+    };
+  }
+
+  return trade;
+}
+
+// === Settlement (with fee accounting) ===
+
+export function checkSettlement(trade: Trade, takerFeePercent: number): Trade {
   if (trade.status !== "open") return trade;
 
   const now = Date.now();
   const endTime = new Date(trade.endDate).getTime();
-
-  // Not yet expired
   if (now < endTime) return trade;
 
-  // Simulate settlement: high-probability side wins ~90% of the time
-  // For paper trading, we use entryPrice as proxy for probability
+  // Simulate: high-probability side wins ~90% of the time
   const winProbability = trade.entryPrice;
   const won = Math.random() < winProbability;
 
+  const cost = trade.entryPrice * trade.shares;
+
   if (won) {
     const exitPrice = 1.0;
-    const pnl = (exitPrice - trade.entryPrice) * trade.shares;
+    const exitFee = Math.round(exitPrice * trade.shares * (takerFeePercent / 100) * 100) / 100;
+    const proceeds = exitPrice * trade.shares - exitFee;
+    const pnl = proceeds - cost - trade.entryFee;
     return {
       ...trade,
       exitPrice,
+      exitFee,
       pnl: Math.round(pnl * 100) / 100,
-      pnlPercent: Math.round(((exitPrice - trade.entryPrice) / trade.entryPrice) * 10000) / 100,
+      pnlPercent: Math.round((pnl / (cost + trade.entryFee)) * 10000) / 100,
       status: "settled_win",
       settledAt: new Date().toISOString(),
     };
   } else {
     const exitPrice = 0;
-    const pnl = -trade.entryPrice * trade.shares;
+    const pnl = -(cost + trade.entryFee);
     return {
       ...trade,
       exitPrice,
+      exitFee: 0,
       pnl: Math.round(pnl * 100) / 100,
       pnlPercent: -100,
       status: "settled_loss",
@@ -132,11 +325,12 @@ export function checkSettlement(trade: Trade): Trade {
   }
 }
 
+// === Portfolio Stats (with total fees tracking) ===
+
 export function calculatePortfolioStats(
   trades: Trade[],
   config: TradingConfig
 ): PortfolioState {
-  let cashBalance = config.bankroll;
   let realizedPnl = 0;
   let unrealizedPnl = 0;
   let winningTrades = 0;
@@ -146,21 +340,15 @@ export function calculatePortfolioStats(
     { timestamp: new Date(Date.now() - 86400000).toISOString(), value: config.bankroll },
   ];
 
-  // Sort trades by entry time
   const sorted = [...trades].sort(
     (a, b) => new Date(a.enteredAt).getTime() - new Date(b.enteredAt).getTime()
   );
 
   for (const trade of sorted) {
-    const cost = trade.entryPrice * trade.shares;
-
     if (trade.status === "open") {
-      cashBalance -= cost;
-      // Estimate current value at entry price (no live price update in paper mode)
-      unrealizedPnl += 0; // flat until settlement
+      unrealizedPnl += 0;
     } else if (trade.status === "settled_win") {
-      const profit = trade.pnl ?? 0;
-      realizedPnl += profit;
+      realizedPnl += trade.pnl ?? 0;
       winningTrades++;
       if (trade.settledAt) {
         equityCurve.push({
@@ -169,8 +357,7 @@ export function calculatePortfolioStats(
         });
       }
     } else if (trade.status === "settled_loss" || trade.status === "stopped_out") {
-      const loss = trade.pnl ?? 0;
-      realizedPnl += loss;
+      realizedPnl += trade.pnl ?? 0;
       losingTrades++;
       if (trade.settledAt) {
         equityCurve.push({
@@ -181,17 +368,15 @@ export function calculatePortfolioStats(
     }
   }
 
-  // Cash = bankroll + realized P&L - cost of open positions
   const openCost = trades
     .filter((t) => t.status === "open")
-    .reduce((sum, t) => sum + t.entryPrice * t.shares, 0);
-  cashBalance = config.bankroll + realizedPnl - openCost;
+    .reduce((sum, t) => sum + t.entryPrice * t.shares + t.entryFee, 0);
+  const cashBalance = config.bankroll + realizedPnl - openCost;
 
   const totalValue = cashBalance + openCost + unrealizedPnl;
   const totalSettled = winningTrades + losingTrades;
   const winRate = totalSettled > 0 ? Math.round((winningTrades / totalSettled) * 1000) / 10 : 0;
 
-  // Max drawdown
   let peak = config.bankroll;
   let maxDrawdown = 0;
   for (const point of equityCurve) {
@@ -200,7 +385,6 @@ export function calculatePortfolioStats(
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
-  // Add current value to curve
   equityCurve.push({ timestamp: new Date().toISOString(), value: totalValue });
 
   return {

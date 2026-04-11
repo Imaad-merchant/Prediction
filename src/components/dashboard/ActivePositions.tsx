@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { Trade } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
-import { Clock } from "lucide-react";
+import { Clock, Shield, Target, Zap } from "lucide-react";
 import { timeAgo } from "@/lib/utils";
 
 export default function ActivePositions({ trades }: { trades: Trade[] }) {
@@ -36,6 +36,21 @@ export default function ActivePositions({ trades }: { trades: Trade[] }) {
                       <Clock className="w-3 h-3" />
                       {timeAgo(trade.endDate)}
                     </span>
+                    {trade.strategy === "settlement_arbitrage" ? (
+                      <Badge variant="outline" className="text-[9px] border-cyan-800 text-cyan-400">
+                        <Target className="w-2.5 h-2.5 mr-0.5" />Arb
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[9px] border-purple-800 text-purple-400">
+                        <Zap className="w-2.5 h-2.5 mr-0.5" />Expiry
+                      </Badge>
+                    )}
+                    {trade.stopLossPrice && (
+                      <span className="flex items-center gap-0.5 text-amber-500">
+                        <Shield className="w-3 h-3" />
+                        SL {(trade.stopLossPrice * 100).toFixed(0)}c
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0">

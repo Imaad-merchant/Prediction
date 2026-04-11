@@ -13,8 +13,10 @@ import { Loader2, BarChart2, CheckCircle, AlertTriangle } from "lucide-react";
 interface AutoTradeResult {
   newTrades: number;
   settledTrades: number;
+  stoppedTrades: number;
   tradesAnalyzed: number;
   opportunitiesFound: number;
+  strategiesUsed?: { settlementArbitrage: number; expiryConvergence: number };
 }
 
 export default function DashboardPage() {
@@ -65,8 +67,10 @@ export default function DashboardPage() {
         setLastResult({
           newTrades: json.data.newTrades?.length || 0,
           settledTrades: json.data.settledTrades?.length || 0,
+          stoppedTrades: json.data.stoppedTrades?.length || 0,
           tradesAnalyzed: json.data.tradesAnalyzed || 0,
           opportunitiesFound: json.data.opportunitiesFound || 0,
+          strategiesUsed: json.data.strategiesUsed,
         });
       }
       fetchStore();
@@ -113,6 +117,12 @@ export default function DashboardPage() {
             Scanned {lastResult.opportunitiesFound} opportunities, analyzed {lastResult.tradesAnalyzed},
             placed {lastResult.newTrades} new trade{lastResult.newTrades !== 1 ? "s" : ""}.
             {lastResult.settledTrades > 0 && ` Settled ${lastResult.settledTrades} position${lastResult.settledTrades !== 1 ? "s" : ""}.`}
+            {lastResult.stoppedTrades > 0 && ` Stopped out ${lastResult.stoppedTrades} position${lastResult.stoppedTrades !== 1 ? "s" : ""}.`}
+            {lastResult.strategiesUsed && (
+              <span className="text-gray-500 ml-1">
+                (Arb: {lastResult.strategiesUsed.settlementArbitrage}, Expiry: {lastResult.strategiesUsed.expiryConvergence})
+              </span>
+            )}
           </span>
         </div>
       )}

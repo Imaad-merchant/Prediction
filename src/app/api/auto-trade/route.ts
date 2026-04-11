@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import type { TradesStore, Opportunity, AnalysisResult, Trade } from "@/lib/types";
+import type { TradesStore, Opportunity, AnalysisResult, Trade, OrderLevel } from "@/lib/types";
 import {
   defaultTradesStore,
   calculatePortfolioStats,
@@ -9,12 +9,18 @@ import {
   shouldTakeTrade,
   simulateTradeEntry,
   checkSettlement,
+  checkStopLoss,
+  estimateSlippage,
+  passesSlippageGate,
+  scoreSettlementArbitrage,
 } from "@/lib/trading";
 
 const DATA_DIR = process.env.VERCEL
   ? join("/tmp", "data")
   : join(process.cwd(), "data");
 const TRADES_FILE = join(DATA_DIR, "trades.json");
+
+const CLOB_API = "https://clob.polymarket.com";
 
 async function readStore(): Promise<TradesStore> {
   try {
@@ -31,23 +37,69 @@ async function writeStore(store: TradesStore) {
 }
 
 function getBaseUrl(req: Request): string {
-  // Use the request's origin so it works on localhost AND Vercel
   const url = new URL(req.url);
   return url.origin;
 }
 
+// Fetch orderbook asks for slippage estimation
+async function fetchAsks(tokenId: string): Promise<OrderLevel[]> {
+  try {
+    const res = await fetch(`${CLOB_API}/book?token_id=${tokenId}`);
+    if (!res.ok) return [];
+    const book = await res.json();
+    return (book.asks || [])
+      .map((a: Record<string, string>) => ({
+        price: parseFloat(a.price),
+        size: parseFloat(a.size),
+      }))
+      .sort((a: OrderLevel, b: OrderLevel) => a.price - b.price);
+  } catch {
+    return [];
+  }
+}
+
+// Fetch current price for stop-loss checks
+async function fetchCurrentPrice(tokenId: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${CLOB_API}/price?token_id=${tokenId}&side=buy`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return parseFloat(data.price) || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   const BASE_URL = getBaseUrl(req);
+
   try {
     const store = await readStore();
+    const config = store.config;
     const newTrades: Trade[] = [];
     const settledTrades: Trade[] = [];
+    const stoppedTrades: Trade[] = [];
     let tradesAnalyzed = 0;
 
-    // Step 1: Check/settle existing open positions
+    // Step 1: Check stop-losses on open positions
+    if (config.stopLossPercent > 0) {
+      for (let i = 0; i < store.trades.length; i++) {
+        if (store.trades[i].status !== "open") continue;
+        const currentPrice = await fetchCurrentPrice(store.trades[i].tokenId);
+        if (currentPrice !== null) {
+          const updated = checkStopLoss(store.trades[i], currentPrice, config);
+          if (updated.status === "stopped_out") {
+            store.trades[i] = updated;
+            stoppedTrades.push(updated);
+          }
+        }
+      }
+    }
+
+    // Step 2: Check/settle expired positions (with fee accounting)
     for (let i = 0; i < store.trades.length; i++) {
       if (store.trades[i].status === "open") {
-        const updated = checkSettlement(store.trades[i]);
+        const updated = checkSettlement(store.trades[i], config.takerFeePercent);
         if (updated.status !== "open") {
           store.trades[i] = updated;
           settledTrades.push(updated);
@@ -55,32 +107,78 @@ export async function POST(req: Request) {
       }
     }
 
-    // Step 2: Recalculate portfolio after settlements
-    store.portfolio = calculatePortfolioStats(store.trades, store.config);
+    // Step 3: Recalculate portfolio after settlements + stop-losses
+    store.portfolio = calculatePortfolioStats(store.trades, config);
 
-    // Step 3: Scan for new opportunities
+    // Count open positions
+    const openPositionCount = store.trades.filter((t) => t.status === "open").length;
+
+    // Step 4: Scan for new opportunities
     let opportunities: Opportunity[] = [];
     try {
       const oppRes = await fetch(`${BASE_URL}/api/opportunities`);
       const oppJson = await oppRes.json();
-      opportunities = (oppJson.data || []).slice(0, 5);
+      opportunities = oppJson.data || [];
     } catch {
       // Opportunities fetch failed
     }
 
-    // Step 4: Analyze top candidates and decide
+    // Step 5: Score and filter by strategy
+    type ScoredOpp = Opportunity & {
+      strategyType: "expiry_convergence" | "settlement_arbitrage";
+      arbScore?: number;
+    };
+
+    const scoredOpps: ScoredOpp[] = [];
+
+    for (const opp of opportunities) {
+      // Skip if already have a position
+      if (store.trades.find((t) => t.marketId === opp.id && t.status === "open")) continue;
+
+      if (config.strategy === "settlement_arbitrage" || config.strategy === "combined") {
+        // Settlement arbitrage: high-price tokens near resolution
+        const arb = scoreSettlementArbitrage(
+          opp.realAskPrice,
+          opp.hoursLeft,
+          config.takerFeePercent
+        );
+        if (arb.viable) {
+          scoredOpps.push({
+            ...opp,
+            strategyType: "settlement_arbitrage",
+            arbScore: arb.confidence,
+            edge: arb.netEdge,
+          });
+        }
+      }
+
+      if (config.strategy === "expiry_convergence" || config.strategy === "combined") {
+        // Expiry convergence: existing strategy (lower price, higher edge)
+        if (opp.realAskPrice < 0.95 && opp.profitPerShare > 0.02) {
+          scoredOpps.push({
+            ...opp,
+            strategyType: "expiry_convergence",
+          });
+        }
+      }
+    }
+
+    // Sort: settlement arb by confidence, expiry by profit
+    scoredOpps.sort((a, b) => {
+      if (a.strategyType === "settlement_arbitrage" && b.strategyType === "settlement_arbitrage") {
+        return (b.arbScore ?? 0) - (a.arbScore ?? 0);
+      }
+      return b.profitPerShare - a.profitPerShare;
+    });
+
+    // Step 6: Analyze and execute top candidates
     let tradesThisRun = 0;
     const maxTradesPerRun = 3;
 
-    for (const opp of opportunities) {
+    for (const opp of scoredOpps.slice(0, 8)) {
       if (tradesThisRun >= maxTradesPerRun) break;
+      if (openPositionCount + tradesThisRun >= config.maxPositions) break;
       if (store.portfolio.cashBalance < 1) break;
-
-      // Skip if we already have a position in this market
-      const existingPos = store.trades.find(
-        (t) => t.marketId === opp.id && t.status === "open"
-      );
-      if (existingPos) continue;
 
       tradesAnalyzed++;
 
@@ -103,34 +201,55 @@ export async function POST(req: Request) {
 
         const analysis: AnalysisResult = analyzeJson.data;
 
-        // Check if we should take this trade
-        const decision = shouldTakeTrade(analysis, store.config, store.portfolio);
+        // Should we take this trade?
+        const decision = shouldTakeTrade(
+          analysis,
+          config,
+          store.portfolio,
+          openPositionCount + tradesThisRun
+        );
         if (!decision.take) continue;
 
-        // Calculate position size
+        // Position sizing
         const betDollars = calculatePositionSize(
           store.portfolio.cashBalance,
           analysis.edge,
-          store.config.maxBetSize
+          config
         );
-        const shares = Math.floor(betDollars / opp.realAskPrice);
+
+        // Slippage gate: fetch orderbook and estimate fill quality
+        const asks = await fetchAsks(opp.tokenId);
+        const slippage = estimateSlippage(asks, betDollars);
+        const slippageCheck = passesSlippageGate(slippage, config);
+        if (!slippageCheck.pass) continue;
+
+        // Use VWAP as effective entry price if available
+        const effectivePrice = slippage.vwap > 0 ? slippage.vwap : opp.realAskPrice;
+        const shares = Math.floor(betDollars / effectivePrice);
         if (shares < 1) continue;
 
-        // Create trade
-        const trade = simulateTradeEntry(opp, analysis, shares);
+        // Create trade with fees and stop-loss
+        const trade = simulateTradeEntry(
+          { ...opp, realAskPrice: effectivePrice },
+          analysis,
+          shares,
+          config,
+          slippage.slippagePercent,
+          opp.strategyType ?? "expiry_convergence"
+        );
         store.trades.unshift(trade);
         newTrades.push(trade);
         tradesThisRun++;
 
         // Update portfolio
-        store.portfolio = calculatePortfolioStats(store.trades, store.config);
+        store.portfolio = calculatePortfolioStats(store.trades, config);
       } catch {
-        // Analysis failed for this opportunity, skip
+        // Analysis failed for this opportunity
       }
     }
 
     // Final portfolio recalculation
-    store.portfolio = calculatePortfolioStats(store.trades, store.config);
+    store.portfolio = calculatePortfolioStats(store.trades, config);
     store.config.lastRunAt = new Date().toISOString();
     await writeStore(store);
 
@@ -138,9 +257,14 @@ export async function POST(req: Request) {
       data: {
         newTrades,
         settledTrades,
+        stoppedTrades,
         portfolio: store.portfolio,
         tradesAnalyzed,
         opportunitiesFound: opportunities.length,
+        strategiesUsed: {
+          settlementArbitrage: scoredOpps.filter((o) => o.strategyType === "settlement_arbitrage").length,
+          expiryConvergence: scoredOpps.filter((o) => o.strategyType === "expiry_convergence").length,
+        },
       },
     });
   } catch (error) {

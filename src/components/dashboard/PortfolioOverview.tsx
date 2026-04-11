@@ -1,7 +1,7 @@
 "use client";
 
 import type { PortfolioState, TradingConfig } from "@/lib/types";
-import { DollarSign, TrendingUp, Target, BarChart3 } from "lucide-react";
+import { DollarSign, TrendingUp, Target, BarChart3, TrendingDown, ShieldAlert } from "lucide-react";
 
 interface PortfolioOverviewProps {
   portfolio: PortfolioState;
@@ -46,10 +46,18 @@ export default function PortfolioOverview({ portfolio, config }: PortfolioOvervi
       icon: BarChart3,
       iconColor: "text-purple-400",
     },
+    {
+      label: "Max Drawdown",
+      value: `${portfolio.maxDrawdown.toFixed(1)}%`,
+      sub: `Cash: $${portfolio.cashBalance.toFixed(2)}`,
+      subColor: "text-gray-500",
+      icon: portfolio.maxDrawdown > 10 ? ShieldAlert : TrendingDown,
+      iconColor: portfolio.maxDrawdown > 10 ? "text-red-400" : portfolio.maxDrawdown > 5 ? "text-amber-400" : "text-gray-500",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {cards.map((card) => {
         const Icon = card.icon;
         return (

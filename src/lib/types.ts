@@ -143,6 +143,24 @@ export interface TradingConfig {
   mode: "paper" | "live";
   isRunning: boolean;
   lastRunAt: string | null;
+  // From Polymarket_trader
+  strategy: "expiry_convergence" | "settlement_arbitrage" | "combined";
+  maxPositions: number;
+  capitalSplitPercent: number; // max % of balance per position (e.g. 0.20 = 20%)
+  stopLossPercent: number; // close if price drops X% below entry (0 = disabled)
+  slippageTolerancePercent: number; // abort trade if slippage > this
+  takerFeePercent: number; // Polymarket taker fee (default 2%)
+  minConfidence: number; // minimum confidence score (0-1)
+  minEdge: number; // minimum edge in percentage points
+}
+
+export interface SlippageEstimate {
+  vwap: number;
+  bestPrice: number;
+  slippagePercent: number;
+  fillRatio: number;
+  unfilledUsd: number;
+  liquidityOk: boolean;
 }
 
 export interface Trade {
@@ -163,6 +181,12 @@ export interface Trade {
   endDate: string;
   enteredAt: string;
   settledAt: string | null;
+  // From Polymarket_trader
+  strategy: "expiry_convergence" | "settlement_arbitrage";
+  entryFee: number; // taker fee paid on entry
+  exitFee: number | null; // taker fee paid on exit
+  slippageEstimate: number; // estimated slippage % at entry
+  stopLossPrice: number | null; // price at which stop-loss triggers
 }
 
 export interface PortfolioState {
