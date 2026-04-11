@@ -221,6 +221,19 @@ export interface TradesStore {
   trades: Trade[];
 }
 
+// === Calibration Engine Types ===
+
+export interface CalibrationResult {
+  calibrated_p: number; // 0-1 probability
+  edge: number; // calibrated_p - market_p
+  sources_agree: boolean;
+  key_risk: string;
+  confidence_discount: number; // 1.0 if 3+ agree, 0.7 if 2, 0.4 if just GPT
+  liquidity_discount: number; // log(volume)/log(maxVolume)
+  source_count: number;
+  reasoning: string; // GPT calibration reasoning
+}
+
 export interface OpportunityScore {
   overall: number;
   edgeScore: number;

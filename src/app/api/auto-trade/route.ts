@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { TradesStore, Opportunity, AnalysisResult, Trade, OrderLevel } from "@/lib/types";
+import type { TradesStore, Opportunity, AnalysisResult, CalibrationResult, Trade, OrderLevel } from "@/lib/types";
 import {
   defaultTradesStore,
   calculatePortfolioStats,
@@ -54,6 +54,17 @@ async function fetchCurrentPrice(tokenId: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+function detectCategory(question: string): string {
+  const q = question.toLowerCase();
+  if (/trump|biden|election|democrat|republican|congress|senate|governor|vote/.test(q)) return "politics";
+  if (/bitcoin|btc|eth|solana|crypto|xrp|token|defi/.test(q)) return "crypto";
+  if (/nba|nfl|mlb|nhl|soccer|football|tennis|golf|masters|pga|ufc/.test(q)) return "sports";
+  if (/spy|nasdaq|stock|s&p|market|fed|rate|gdp|inflation|price of/.test(q)) return "finance";
+  if (/weather|temperature|rain|snow/.test(q)) return "weather";
+  if (/ai|openai|google|apple|meta|microsoft|tech/.test(q)) return "tech";
+  return "other";
 }
 
 function createArbAnalysis(
@@ -217,33 +228,66 @@ export async function POST(req: Request) {
 
       try {
         let analysis: AnalysisResult;
+        let edgeScore: number;
 
         if (opp.strategyType === "settlement_arbitrage" && opp.arbData) {
+          // Settlement arb: synthetic analysis, no GPT call needed
           analysis = createArbAnalysis(opp, opp.arbData);
+          const modelProb = analysis.predictedProbability / 100;
+          const marketProb = opp.gammaProbability;
+          const liqScore = Math.min(opp.liquidity / 10000, 1);
+          edgeScore = calculateEdgeScore(modelProb, marketProb, liqScore);
         } else {
-          const analyzeRes = await fetch(`${BASE_URL}/api/analyze`, {
+          // Expiry convergence: use calibration engine with evidence pipeline
+          const calibrateRes = await fetch(`${BASE_URL}/api/calibrate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               question: opp.question,
-              currentYesPrice: Math.round(opp.gammaProbability * 100),
-              currentNoPrice: Math.round((1 - opp.gammaProbability) * 100),
+              category: detectCategory(opp.question),
+              marketPrice: opp.gammaProbability,
               volume: Math.round(opp.volume),
               liquidity: Math.round(opp.liquidity),
               endDate: opp.endDate,
             }),
-            signal: AbortSignal.timeout(20000),
+            signal: AbortSignal.timeout(25000),
           });
-          const analyzeJson = await analyzeRes.json();
-          if (analyzeJson.error) continue;
-          analysis = analyzeJson.data;
-        }
+          const calibrateJson = await calibrateRes.json();
+          if (calibrateJson.error) continue;
+          const cal: CalibrationResult = calibrateJson.data;
 
-        // Calculate edge score
-        const modelProb = analysis.predictedProbability / 100;
-        const marketProb = opp.gammaProbability;
-        const liqScore = Math.min(opp.liquidity / 10000, 1);
-        const edgeScore = calculateEdgeScore(modelProb, marketProb, liqScore);
+          // New edge formula: raw_edge * confidence_discount * liquidity_discount
+          const calibratedEdge = cal.edge * cal.confidence_discount * cal.liquidity_discount;
+          edgeScore = Math.round(calibratedEdge * 1000) / 1000;
+
+          // Convert CalibrationResult → AnalysisResult for downstream compatibility
+          const edgePp = cal.edge * 100; // convert to percentage points
+          analysis = {
+            predictedProbability: cal.calibrated_p * 100,
+            confidence: cal.confidence_discount >= 0.7 ? "High" : cal.confidence_discount >= 0.5 ? "Medium" : "Low",
+            recommendation: Math.abs(edgePp) > 10 && cal.confidence_discount >= 0.5
+              ? (edgePp > 0 ? "BUY YES" : "BUY NO")
+              : Math.abs(edgePp) > 5 ? "HOLD" : "AVOID",
+            edge: Math.round(edgePp * 10) / 10,
+            reasoning: {
+              decomposition: [`Calibrated from ${cal.source_count} source(s)`],
+              baseRate: `Sources ${cal.sources_agree ? "agree" : "disagree"} — confidence discount: ${cal.confidence_discount}`,
+              keyFactors: [
+                { factor: `Calibrated probability: ${(cal.calibrated_p * 100).toFixed(1)}%`, direction: cal.edge > 0 ? "for" : "against", weight: "high" },
+                { factor: `Key risk: ${cal.key_risk}`, direction: "against", weight: "medium" },
+                { factor: `Liquidity discount: ${cal.liquidity_discount.toFixed(2)}`, direction: cal.liquidity_discount > 0.5 ? "for" : "against", weight: "low" },
+              ],
+              newsContext: cal.reasoning,
+              uncertainties: [cal.key_risk],
+            },
+            riskAssessment: {
+              liquidityRisk: cal.liquidity_discount > 0.7 ? "Low" : cal.liquidity_discount > 0.4 ? "Medium" : "High",
+              timingRisk: `${opp.hoursLeft.toFixed(1)}h to resolution`,
+              marketEfficiency: cal.sources_agree ? "Sources corroborate market" : "Sources diverge from market",
+            },
+            summary: `${cal.reasoning} [Edge: ${(cal.edge * 100).toFixed(1)}pp × ${cal.confidence_discount} conf × ${cal.liquidity_discount.toFixed(2)} liq = ${(calibratedEdge * 100).toFixed(1)}pp net]`,
+          };
+        }
 
         const decision = shouldTakeTrade(
           analysis,
