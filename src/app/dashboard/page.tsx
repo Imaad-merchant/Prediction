@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { TradesStore } from "@/lib/types";
 import { defaultTradesStore } from "@/lib/trading";
 import PortfolioOverview from "@/components/dashboard/PortfolioOverview";
@@ -8,7 +8,25 @@ import EquityCurve from "@/components/dashboard/EquityCurve";
 import TradeHistory from "@/components/dashboard/TradeHistory";
 import ActivePositions from "@/components/dashboard/ActivePositions";
 import TradingControls from "@/components/dashboard/TradingControls";
-import { Loader2, BarChart2, CheckCircle, AlertTriangle } from "lucide-react";
+import { Loader2, BarChart2, CheckCircle, AlertTriangle, RefreshCw } from "lucide-react";
+
+const STORAGE_KEY = "polypredict_trades_store";
+
+function loadStore(): TradesStore {
+  if (typeof window === "undefined") return defaultTradesStore();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return defaultTradesStore();
+}
+
+function saveStore(store: TradesStore) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  } catch {}
+}
 
 interface AutoTradeResult {
   newTrades: number;
@@ -24,46 +42,102 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [autoTrading, setAutoTrading] = useState(false);
   const [lastResult, setLastResult] = useState<AutoTradeResult | null>(null);
+  const [livePrices, setLivePrices] = useState<Record<string, number | null>>({});
+  const [lastPriceUpdate, setLastPriceUpdate] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchStore = useCallback(async () => {
-    try {
-      const res = await fetch("/api/trades");
-      const json = await res.json();
-      if (!json.error) setStore(json.data);
-    } catch {}
+  // Load from localStorage on mount
+  useEffect(() => {
+    const loaded = loadStore();
+    setStore(loaded);
     setLoading(false);
   }, []);
 
+  // Save to localStorage whenever store changes
   useEffect(() => {
-    fetchStore();
-  }, [fetchStore]);
+    if (!loading) saveStore(store);
+  }, [store, loading]);
 
-  const handleConfigUpdate = async (config: Record<string, unknown>) => {
-    await fetch("/api/trades", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "config", config }),
-    });
-    fetchStore();
+  // Fetch live prices for open positions
+  const fetchLivePrices = useCallback(async () => {
+    const openTrades = store.trades.filter((t) => t.status === "open");
+    if (openTrades.length === 0) return;
+
+    const tokenIds = [...new Set(openTrades.map((t) => t.tokenId))];
+    try {
+      const res = await fetch("/api/live-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokenIds }),
+      });
+      const json = await res.json();
+      if (!json.error && json.data) {
+        setLivePrices(json.data);
+        setLastPriceUpdate(new Date().toLocaleTimeString());
+      }
+    } catch {}
+  }, [store.trades]);
+
+  // Auto-poll prices every 30 seconds
+  useEffect(() => {
+    fetchLivePrices();
+    pollRef.current = setInterval(fetchLivePrices, 30000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [fetchLivePrices]);
+
+  // Calculate live unrealized P&L
+  const liveUnrealizedPnl = store.trades
+    .filter((t) => t.status === "open")
+    .reduce((sum, t) => {
+      const currentPrice = livePrices[t.tokenId];
+      if (currentPrice == null) return sum;
+      const currentValue = currentPrice * t.shares;
+      const cost = t.entryPrice * t.shares + t.entryFee;
+      return sum + (currentValue - cost);
+    }, 0);
+
+  const liveTotalValue = store.portfolio.cashBalance +
+    store.trades
+      .filter((t) => t.status === "open")
+      .reduce((sum, t) => {
+        const price = livePrices[t.tokenId] ?? t.entryPrice;
+        return sum + price * t.shares;
+      }, 0);
+
+  const handleConfigUpdate = (config: Record<string, unknown>) => {
+    setStore((prev) => ({
+      ...prev,
+      config: { ...prev.config, ...config },
+    }));
   };
 
-  const handleReset = async (bankroll: number, maxBet: number, dailyLimit: number) => {
-    await fetch("/api/trades", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "reset", bankroll, maxBetSize: maxBet, dailyLossLimit: dailyLimit }),
-    });
+  const handleReset = (bankroll: number, maxBet: number, dailyLimit: number) => {
+    const fresh = defaultTradesStore();
+    fresh.config.bankroll = bankroll;
+    fresh.config.maxBetSize = maxBet;
+    fresh.config.dailyLossLimit = dailyLimit;
+    setStore(fresh);
     setLastResult(null);
-    fetchStore();
+    setLivePrices({});
   };
 
   const handleAutoTrade = async () => {
     setAutoTrading(true);
     setLastResult(null);
     try {
-      const res = await fetch("/api/auto-trade", { method: "POST" });
+      const res = await fetch("/api/auto-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ store }),
+      });
       const json = await res.json();
-      if (!json.error) {
+      if (!json.error && json.data) {
+        // Use the full store returned by auto-trade
+        if (json.data.store) {
+          setStore(json.data.store);
+        }
         setLastResult({
           newTrades: json.data.newTrades?.length || 0,
           settledTrades: json.data.settledTrades?.length || 0,
@@ -72,8 +146,9 @@ export default function DashboardPage() {
           opportunitiesFound: json.data.opportunitiesFound || 0,
           strategiesUsed: json.data.strategiesUsed,
         });
+        // Immediately fetch live prices for any new positions
+        setTimeout(fetchLivePrices, 1000);
       }
-      fetchStore();
     } catch {} finally {
       setAutoTrading(false);
     }
@@ -87,14 +162,32 @@ export default function DashboardPage() {
     );
   }
 
+  const openCount = store.trades.filter((t) => t.status === "open").length;
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <BarChart2 className="w-7 h-7 text-cyan-400" />
-        <div>
-          <h1 className="text-2xl font-bold text-white">Trading Dashboard</h1>
-          <p className="text-sm text-gray-500">Paper trading with AI-powered market analysis</p>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <BarChart2 className="w-7 h-7 text-cyan-400" />
+          <div>
+            <h1 className="text-2xl font-bold text-white">Trading Dashboard</h1>
+            <p className="text-sm text-gray-500">Paper trading with AI-powered market analysis</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastPriceUpdate && openCount > 0 && (
+            <span className="text-[10px] text-gray-600">
+              Prices: {lastPriceUpdate}
+            </span>
+          )}
+          <button
+            onClick={fetchLivePrices}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Refresh
+          </button>
         </div>
       </div>
 
@@ -127,9 +220,16 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Portfolio Overview */}
+      {/* Portfolio Overview — with live data */}
       <div className="mb-6">
-        <PortfolioOverview portfolio={store.portfolio} config={store.config} />
+        <PortfolioOverview
+          portfolio={{
+            ...store.portfolio,
+            unrealizedPnl: Math.round(liveUnrealizedPnl * 100) / 100,
+            totalValue: Math.round(liveTotalValue * 100) / 100,
+          }}
+          config={store.config}
+        />
       </div>
 
       {/* Equity Curve */}
@@ -138,10 +238,18 @@ export default function DashboardPage() {
         <EquityCurve data={store.portfolio.equityCurve} bankroll={store.config.bankroll} />
       </div>
 
-      {/* Active Positions */}
+      {/* Active Positions — with live prices */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
-        <h3 className="text-sm font-semibold text-gray-300 mb-3">Active Positions</h3>
-        <ActivePositions trades={store.trades} />
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-300">Active Positions</h3>
+          {openCount > 0 && lastPriceUpdate && (
+            <span className="text-[10px] text-emerald-500 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
+        <ActivePositions trades={store.trades} livePrices={livePrices} takerFeePercent={store.config.takerFeePercent} />
       </div>
 
       {/* Trade History */}
@@ -155,7 +263,7 @@ export default function DashboardPage() {
         <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
         <p>
           Paper trading mode. No real money is being used. Trades are simulated using real market data
-          and AI analysis. Settlement assumes high-probability outcomes resolve as expected.
+          and AI analysis. Prices update every 30 seconds from Polymarket CLOB.
         </p>
       </div>
     </div>

@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { readFile, writeFile, mkdir } from "fs/promises";
-import { join } from "path";
 import type { TradesStore, Opportunity, AnalysisResult, Trade, OrderLevel } from "@/lib/types";
 import {
   defaultTradesStore,
@@ -17,26 +15,7 @@ import {
 
 export const maxDuration = 60;
 
-const DATA_DIR = process.env.VERCEL
-  ? join("/tmp", "data")
-  : join(process.cwd(), "data");
-const TRADES_FILE = join(DATA_DIR, "trades.json");
-
 const CLOB_API = "https://clob.polymarket.com";
-
-async function readStore(): Promise<TradesStore> {
-  try {
-    const data = await readFile(TRADES_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return defaultTradesStore();
-  }
-}
-
-async function writeStore(store: TradesStore) {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(TRADES_FILE, JSON.stringify(store, null, 2));
-}
 
 function getBaseUrl(req: Request): string {
   const url = new URL(req.url);
@@ -74,7 +53,6 @@ async function fetchCurrentPrice(tokenId: string): Promise<number | null> {
   }
 }
 
-// Synthetic analysis for settlement arb — no GPT-4 needed
 function createArbAnalysis(
   opp: Opportunity,
   arbScore: ReturnType<typeof scoreSettlementArbitrage>
@@ -88,7 +66,7 @@ function createArbAnalysis(
       decomposition: [`Settlement arb: buy at ${(opp.realAskPrice * 100).toFixed(1)}c, redeem at $1`],
       baseRate: `Market at ${(opp.gammaProbability * 100).toFixed(0)}% with ${opp.hoursLeft.toFixed(1)}h left`,
       keyFactors: [
-        { factor: `Net edge ${arbScore.netEdge.toFixed(1)}% after ${2}% fee`, direction: "for", weight: "high" },
+        { factor: `Net edge ${arbScore.netEdge.toFixed(1)}% after 2% fee`, direction: "for", weight: "high" },
         { factor: `${opp.hoursLeft.toFixed(1)} hours to resolution`, direction: "for", weight: "medium" },
       ],
       newsContext: "Settlement arbitrage — near-certain market",
@@ -116,7 +94,9 @@ export async function POST(req: Request) {
   const BASE_URL = getBaseUrl(req);
 
   try {
-    const store = await readStore();
+    // Accept store from client (localStorage) — no file I/O
+    const body = await req.json();
+    const store: TradesStore = body.store || defaultTradesStore();
     const config = store.config;
     const newTrades: Trade[] = [];
     const settledTrades: Trade[] = [];
@@ -158,7 +138,7 @@ export async function POST(req: Request) {
     store.portfolio = calculatePortfolioStats(store.trades, config);
     const openPositionCount = store.trades.filter((t) => t.status === "open").length;
 
-    // Step 4: Scan opportunities (with timeout)
+    // Step 4: Scan opportunities
     let opportunities: Opportunity[] = [];
     try {
       const oppRes = await fetch(`${BASE_URL}/api/opportunities`, {
@@ -182,7 +162,6 @@ export async function POST(req: Request) {
       if (store.trades.find((t) => t.marketId === opp.id && t.status === "open"))
         continue;
 
-      // Settlement arbitrage
       if (config.strategy === "settlement_arbitrage" || config.strategy === "combined") {
         const arb = scoreSettlementArbitrage(
           opp.realAskPrice,
@@ -196,11 +175,10 @@ export async function POST(req: Request) {
             arbData: arb,
             edge: arb.netEdge,
           });
-          continue; // Don't also add as expiry convergence
+          continue;
         }
       }
 
-      // Expiry convergence
       if (config.strategy === "expiry_convergence" || config.strategy === "combined") {
         if (opp.profitPerShare > 0.02) {
           scoredOpps.push({ ...opp, strategyType: "expiry_convergence" });
@@ -208,7 +186,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // Sort: arb by confidence, expiry by profit
     scoredOpps.sort((a, b) => {
       if (a.arbData && b.arbData) return b.arbData.confidence - a.arbData.confidence;
       if (a.arbData) return -1;
@@ -231,10 +208,8 @@ export async function POST(req: Request) {
         let analysis: AnalysisResult;
 
         if (opp.strategyType === "settlement_arbitrage" && opp.arbData) {
-          // Settlement arb: skip GPT-4, use synthetic analysis
           analysis = createArbAnalysis(opp, opp.arbData);
         } else {
-          // Expiry convergence: run AI analysis (with timeout)
           const analyzeRes = await fetch(`${BASE_URL}/api/analyze`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -253,7 +228,6 @@ export async function POST(req: Request) {
           analysis = analyzeJson.data;
         }
 
-        // Should we take this trade?
         const decision = shouldTakeTrade(
           analysis,
           config,
@@ -262,14 +236,12 @@ export async function POST(req: Request) {
         );
         if (!decision.take) continue;
 
-        // Position sizing
         const betDollars = calculatePositionSize(
           store.portfolio.cashBalance,
           analysis.edge,
           config
         );
 
-        // Slippage gate
         const asks = await fetchAsks(opp.tokenId);
         const slippage = estimateSlippage(asks, betDollars);
         const slippageCheck = passesSlippageGate(slippage, config);
@@ -279,7 +251,6 @@ export async function POST(req: Request) {
         const shares = Math.floor(betDollars / effectivePrice);
         if (shares < 1) continue;
 
-        // Create trade
         const trade = simulateTradeEntry(
           { ...opp, realAskPrice: effectivePrice },
           analysis,
@@ -298,17 +269,16 @@ export async function POST(req: Request) {
       }
     }
 
-    // Save
+    // Final state
     store.portfolio = calculatePortfolioStats(store.trades, config);
     store.config.lastRunAt = new Date().toISOString();
-    await writeStore(store);
 
     return NextResponse.json({
       data: {
+        store, // Return full store for client to persist
         newTrades,
         settledTrades,
         stoppedTrades,
-        portfolio: store.portfolio,
         tradesAnalyzed,
         opportunitiesFound: opportunities.length,
         strategiesUsed: {
