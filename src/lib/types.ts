@@ -77,6 +77,55 @@ export interface AnalysisResult {
     marketEfficiency: string;
   };
   summary: string;
+  positionSizing?: {
+    direction: "bullish" | "bearish" | "neutral";
+    materiality: number;
+    suggestedSize: number;
+    maxBuyPrice: number;
+    kellyFraction: number;
+    dollarEdge: number;
+    profitPerShare: number;
+  };
+}
+
+export interface Opportunity {
+  id: string;
+  question: string;
+  slug: string;
+  image: string;
+  endDate: string;
+  gammaProbability: number;
+  realAskPrice: number;
+  profitPerShare: number;
+  edge: number;
+  volume: number;
+  liquidity: number;
+  hoursLeft: number;
+  side: "YES" | "NO";
+  tokenId: string;
+  riskLevel: "Low" | "Medium" | "High";
+}
+
+export interface Signal {
+  id: string;
+  timestamp: string;
+  marketId: string;
+  question: string;
+  predictedProbability: number;
+  marketPrice: number;
+  edge: number;
+  recommendation: string;
+  confidence: string;
+  summary: string;
+  suggestedSize?: number;
+}
+
+export interface ResearchItem {
+  title: string;
+  url: string;
+  source: string;
+  snippet: string;
+  publishedAt?: string;
 }
 
 export interface OpportunityScore {

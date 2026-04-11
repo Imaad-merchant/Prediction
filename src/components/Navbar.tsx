@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { TrendingUp } from "lucide-react";
+import { TrendingUp, Radio } from "lucide-react";
 
 export default function Navbar() {
   return (
@@ -14,8 +14,14 @@ export default function Navbar() {
               Poly<span className="text-cyan-400">Predict</span>
             </span>
           </Link>
-          <div className="flex items-center gap-4 text-sm text-gray-400">
-            <span>Polymarket Prediction Engine</span>
+          <div className="flex items-center gap-4 text-sm">
+            <Link
+              href="/signals"
+              className="flex items-center gap-1.5 text-gray-400 hover:text-cyan-400 transition-colors"
+            >
+              <Radio className="w-4 h-4" />
+              Signals
+            </Link>
           </div>
         </div>
       </div>

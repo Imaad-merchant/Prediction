@@ -103,7 +103,53 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
       });
       const json = await res.json();
       if (json.error) throw new Error(json.error);
-      setAnalysis(json.data);
+      const result = json.data;
+
+      // Calculate position sizing (quarter-Kelly from polymarket-pipeline)
+      const marketPrice = market.outcomePrices[0] * 100;
+      const edgeAbs = Math.abs(result.predictedProbability - marketPrice);
+      const kellyFraction = (edgeAbs / 100) * 0.25; // quarter-Kelly
+      const bankroll = 1000; // configurable
+      const suggestedSize = Math.min(Math.round(bankroll * kellyFraction), 100); // max $100
+      const profitPerShare = result.recommendation.includes("YES")
+        ? 1.0 - market.outcomePrices[0]
+        : 1.0 - market.outcomePrices[1];
+      const dollarEdge = suggestedSize * profitPerShare;
+
+      result.positionSizing = {
+        direction: result.edge > 0 ? "bullish" : result.edge < 0 ? "bearish" : "neutral",
+        materiality: edgeAbs / 100,
+        suggestedSize,
+        maxBuyPrice: 0.99, // from auto-trading-agent
+        kellyFraction: Math.round(kellyFraction * 10000) / 100,
+        dollarEdge: Math.round(dollarEdge * 100) / 100,
+        profitPerShare: Math.round(profitPerShare * 100) / 100,
+      };
+
+      setAnalysis(result);
+
+      // Auto-save signal
+      try {
+        await fetch("/api/signals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: `${market.id}-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            marketId: market.id,
+            question: market.question,
+            predictedProbability: result.predictedProbability,
+            marketPrice: Math.round(marketPrice),
+            edge: result.edge,
+            recommendation: result.recommendation,
+            confidence: result.confidence,
+            summary: result.summary,
+            suggestedSize,
+          }),
+        });
+      } catch {
+        // Signal save failed, non-critical
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
@@ -184,6 +230,32 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
           <p className="text-sm text-gray-300">{analysis.summary}</p>
         </div>
       </div>
+
+      {/* Position Sizing (quarter-Kelly from polymarket-pipeline) */}
+      {analysis.positionSizing && analysis.recommendation !== "AVOID" && analysis.recommendation !== "HOLD" && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-800">
+            <p className="text-xs text-gray-500">Suggested Size</p>
+            <p className="text-lg font-bold text-white">${analysis.positionSizing.suggestedSize}</p>
+            <p className="text-[10px] text-gray-600">Quarter-Kelly</p>
+          </div>
+          <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-800">
+            <p className="text-xs text-gray-500">Dollar Edge</p>
+            <p className="text-lg font-bold text-emerald-400">${analysis.positionSizing.dollarEdge}</p>
+            <p className="text-[10px] text-gray-600">Expected profit</p>
+          </div>
+          <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-800">
+            <p className="text-xs text-gray-500">Profit/Share</p>
+            <p className="text-lg font-bold text-cyan-400">{(analysis.positionSizing.profitPerShare * 100).toFixed(0)}c</p>
+            <p className="text-[10px] text-gray-600">On settlement</p>
+          </div>
+          <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-800">
+            <p className="text-xs text-gray-500">Max Buy Price</p>
+            <p className="text-lg font-bold text-amber-400">99c</p>
+            <p className="text-[10px] text-gray-600">Hard safety limit</p>
+          </div>
+        </div>
+      )}
 
       {/* Re-run button */}
       <div className="flex justify-end">

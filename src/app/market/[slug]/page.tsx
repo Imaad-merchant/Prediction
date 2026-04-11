@@ -13,6 +13,7 @@ import OrderBookTable from "@/components/OrderBookTable";
 import MetricsRow from "@/components/MetricsRow";
 import SuperforecasterPanel from "@/components/SuperforecasterPanel";
 import OpportunityScoreDisplay from "@/components/OpportunityScore";
+import ResearchPanel from "@/components/ResearchPanel";
 import {
   Loader2,
   ArrowLeft,
@@ -21,9 +22,10 @@ import {
   Brain,
   RefreshCw,
   ExternalLink,
+  Newspaper,
 } from "lucide-react";
 
-type Tab = "overview" | "orderbook" | "analysis";
+type Tab = "overview" | "orderbook" | "analysis" | "research";
 
 export default function MarketDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
@@ -110,6 +112,7 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
     { id: "overview", label: "Overview", icon: BarChart3 },
     { id: "orderbook", label: "Order Book", icon: BookOpen },
     { id: "analysis", label: "AI Analysis", icon: Brain },
+    { id: "research", label: "Research", icon: Newspaper },
   ];
 
   return (
@@ -277,6 +280,12 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
             market={market}
             liquidity={marketData?.metrics?.totalLiquidity || market.liquidity}
           />
+        </div>
+      )}
+
+      {activeTab === "research" && (
+        <div className="space-y-6">
+          <ResearchPanel question={market.question} />
         </div>
       )}
     </div>
