@@ -70,9 +70,21 @@ export default function DepthChart({ bids, asks }: DepthChartProps) {
     );
   }
 
+  // Compute domains from actual data
+  const prices = data.map((d) => d.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const pricePad = (maxPrice - minPrice) * 0.05 || 0.01;
+
+  const maxDepth = Math.max(
+    ...data.map((d) => d.bidDepth ?? 0),
+    ...data.map((d) => d.askDepth ?? 0),
+    1
+  );
+
   return (
     <ResponsiveContainer width="100%" height={250}>
-      <AreaChart data={data} margin={{ top: 5, right: 5, left: -15, bottom: 5 }}>
+      <AreaChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
         <defs>
           <linearGradient id="bidGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
@@ -86,15 +98,20 @@ export default function DepthChart({ bids, asks }: DepthChartProps) {
         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
         <XAxis
           dataKey="price"
+          type="number"
+          domain={[minPrice - pricePad, maxPrice + pricePad]}
           tickFormatter={(v: number) => `${(v * 100).toFixed(0)}c`}
           stroke="#4b5563"
           tick={{ fill: "#6b7280", fontSize: 11 }}
           tickLine={false}
         />
         <YAxis
+          domain={[0, Math.ceil(maxDepth * 1.1)]}
+          tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : `${v}`}
           stroke="#4b5563"
           tick={{ fill: "#6b7280", fontSize: 11 }}
           tickLine={false}
+          width={50}
         />
         <Tooltip content={<CustomTooltip />} />
         <Area

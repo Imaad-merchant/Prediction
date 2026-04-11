@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { Market } from "@/lib/types";
 import MarketCard from "@/components/MarketCard";
 import MarketSearch from "@/components/MarketSearch";
 import OpportunityScanner from "@/components/OpportunityScanner";
+import BestBetsSidebar from "@/components/BestBetsSidebar";
 import { Loader2, TrendingUp, Zap, LayoutGrid } from "lucide-react";
 
 type HomeTab = "markets" | "opportunities";
@@ -16,6 +17,7 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
   const [sortBy, setSortBy] = useState("volume");
+  const [maxDays, setMaxDays] = useState(0);
   const [activeTab, setActiveTab] = useState<HomeTab>("markets");
 
   const fetchMarkets = useCallback(async () => {
@@ -29,7 +31,7 @@ export default function HomePage() {
           query: query || undefined,
           category: category || undefined,
           sortBy,
-          limit: 30,
+          limit: 50,
         }),
       });
       const json = await res.json();
@@ -48,13 +50,25 @@ export default function HomePage() {
 
   const handleSearch = () => fetchMarkets();
 
+  // Client-side time filter
+  const filteredMarkets = useMemo(() => {
+    if (maxDays === 0) return markets;
+    const now = Date.now();
+    const cutoff = now + maxDays * 24 * 60 * 60 * 1000;
+    return markets.filter((m) => {
+      if (!m.endDate) return false;
+      const end = new Date(m.endDate).getTime();
+      return end > now && end <= cutoff;
+    });
+  }, [markets, maxDays]);
+
   const tabs = [
     { id: "markets" as HomeTab, label: "Browse Markets", icon: LayoutGrid },
     { id: "opportunities" as HomeTab, label: "Opportunities", icon: Zap },
   ];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Hero */}
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
@@ -89,42 +103,62 @@ export default function HomePage() {
       </div>
 
       {activeTab === "markets" && (
-        <>
-          <MarketSearch
-            query={query}
-            onQueryChange={setQuery}
-            category={category}
-            onCategoryChange={setCategory}
-            sortBy={sortBy}
-            onSortChange={setSortBy}
-            onSearch={handleSearch}
-          />
+        <div className="flex gap-6">
+          {/* Main content */}
+          <div className="flex-1 min-w-0">
+            <MarketSearch
+              query={query}
+              onQueryChange={setQuery}
+              category={category}
+              onCategoryChange={setCategory}
+              sortBy={sortBy}
+              onSortChange={setSortBy}
+              maxDays={maxDays}
+              onMaxDaysChange={setMaxDays}
+              onSearch={handleSearch}
+            />
 
-          <div className="mt-6">
-            {loading ? (
-              <div className="flex items-center justify-center py-20">
-                <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-              </div>
-            ) : error ? (
-              <div className="text-center py-20">
-                <p className="text-red-400 mb-2">{error}</p>
-                <button onClick={fetchMarkets} className="text-sm text-cyan-400 hover:text-cyan-300 underline">
-                  Try again
-                </button>
-              </div>
-            ) : markets.length === 0 ? (
-              <div className="text-center py-20 text-gray-500">
-                No markets found. Try a different search or category.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {markets.map((market) => (
-                  <MarketCard key={market.id} market={market} />
-                ))}
-              </div>
+            {maxDays > 0 && (
+              <p className="text-xs text-gray-500 mt-2">
+                Showing markets ending within {maxDays} day{maxDays !== 1 ? "s" : ""} — {filteredMarkets.length} of {markets.length} markets
+              </p>
             )}
+
+            <div className="mt-4">
+              {loading ? (
+                <div className="flex items-center justify-center py-20">
+                  <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+                </div>
+              ) : error ? (
+                <div className="text-center py-20">
+                  <p className="text-red-400 mb-2">{error}</p>
+                  <button onClick={fetchMarkets} className="text-sm text-cyan-400 hover:text-cyan-300 underline">
+                    Try again
+                  </button>
+                </div>
+              ) : filteredMarkets.length === 0 ? (
+                <div className="text-center py-20 text-gray-500">
+                  {maxDays > 0
+                    ? `No markets ending within ${maxDays} days. Try a longer timeframe.`
+                    : "No markets found. Try a different search or category."}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {filteredMarkets.map((market) => (
+                    <MarketCard key={market.id} market={market} />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </>
+
+          {/* Sidebar */}
+          <div className="hidden lg:block w-72 flex-shrink-0">
+            <div className="sticky top-20">
+              <BestBetsSidebar />
+            </div>
+          </div>
+        </div>
       )}
 
       {activeTab === "opportunities" && <OpportunityScanner />}

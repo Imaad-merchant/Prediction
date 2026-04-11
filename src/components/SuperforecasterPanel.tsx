@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Shield,
   Target,
+  TrendingUp,
 } from "lucide-react";
 
 function ScoreRing({ score, size = 120, color = "#06b6d4" }: { score: number; size?: number; color?: string }) {
@@ -78,14 +79,74 @@ interface SuperforecasterPanelProps {
   liquidity: number;
 }
 
+// Extract stock/futures ticker from market question
+function detectTicker(question: string): string | null {
+  // Common patterns: "META close above", "Bitcoin reach", "S&P 500", "WTI Crude", "Gold (XAUUSD)"
+  const tickerMap: Record<string, string> = {
+    "bitcoin": "BTC-USD", "btc": "BTC-USD", "ethereum": "ETH-USD", "eth": "ETH-USD",
+    "solana": "SOL-USD", "sol": "SOL-USD", "xrp": "XRP-USD", "dogecoin": "DOGE-USD",
+    "s&p 500": "^GSPC", "s&p500": "^GSPC", "spy": "SPY", "spdr": "SPY", "sp500": "^GSPC",
+    "nasdaq": "^IXIC", "qqq": "QQQ", "dow jones": "^DJI", "dow": "^DJI",
+    "gold": "GC=F", "xauusd": "GC=F", "xau": "GC=F",
+    "silver": "SI=F", "xagusd": "SI=F",
+    "wti": "CL=F", "crude oil": "CL=F", "oil": "CL=F", "brent": "BZ=F",
+    "natural gas": "NG=F",
+    "tesla": "TSLA", "tsla": "TSLA",
+    "apple": "AAPL", "aapl": "AAPL",
+    "meta": "META", "facebook": "META",
+    "google": "GOOGL", "alphabet": "GOOGL", "googl": "GOOGL",
+    "amazon": "AMZN", "amzn": "AMZN",
+    "microsoft": "MSFT", "msft": "MSFT",
+    "nvidia": "NVDA", "nvda": "NVDA",
+    "amd": "AMD",
+  };
+
+  const q = question.toLowerCase();
+  for (const [keyword, ticker] of Object.entries(tickerMap)) {
+    if (q.includes(keyword)) return ticker;
+  }
+
+  // Try to find ticker in parentheses like (AAPL) or (XAUUSD)
+  const parenMatch = question.match(/\(([A-Z]{1,5})\)/);
+  if (parenMatch) return parenMatch[1];
+
+  return null;
+}
+
 export default function SuperforecasterPanel({ market, liquidity }: SuperforecasterPanelProps) {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stockTicker, setStockTicker] = useState<string | null>(null);
+  const [stockIndicators, setStockIndicators] = useState<Record<string, unknown> | null>(null);
 
   const runAnalysis = async () => {
     setLoading(true);
     setError(null);
+    setStockIndicators(null);
+
+    // Auto-detect and fetch stock data
+    const ticker = detectTicker(market.question);
+    setStockTicker(ticker);
+    let stockData = null;
+
+    if (ticker) {
+      try {
+        const stockRes = await fetch("/api/stock-data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol: ticker, range: "3mo", interval: "1d" }),
+        });
+        const stockJson = await stockRes.json();
+        if (!stockJson.error) {
+          stockData = stockJson.data;
+          setStockIndicators(stockJson.data.indicators);
+        }
+      } catch {
+        // Stock data fetch failed, continue without it
+      }
+    }
+
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -99,6 +160,7 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
           endDate: market.endDate,
           description: market.description,
           category: market.category,
+          stockData,
         }),
       });
       const json = await res.json();
@@ -192,8 +254,16 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
     return (
       <div className="flex flex-col items-center justify-center py-16 space-y-4">
         <Loader2 className="w-12 h-12 text-cyan-400 animate-spin" />
-        <p className="text-sm text-gray-400">Analyzing market with Superforecaster methodology...</p>
-        <p className="text-xs text-gray-600">Decomposing question, evaluating factors, calibrating probability</p>
+        <p className="text-sm text-gray-400">
+          {stockTicker
+            ? `Fetching ${stockTicker} data & running quant analysis...`
+            : "Analyzing market with Superforecaster methodology..."}
+        </p>
+        <p className="text-xs text-gray-600">
+          {stockTicker
+            ? "SMA, RSI, MACD, Bollinger, VWAP, ATR, support/resistance"
+            : "Decomposing question, evaluating factors, calibrating probability"}
+        </p>
       </div>
     );
   }
@@ -254,6 +324,82 @@ export default function SuperforecasterPanel({ market, liquidity }: Superforecas
             <p className="text-lg font-bold text-amber-400">99c</p>
             <p className="text-[10px] text-gray-600">Hard safety limit</p>
           </div>
+        </div>
+      )}
+
+      {/* Stock/Futures Indicators */}
+      {stockIndicators && stockTicker && (
+        <div className="bg-gray-800/30 rounded-xl border border-gray-700 p-4">
+          <h4 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-cyan-400" />
+            Quant Analysis: {stockTicker}
+          </h4>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">Price</span>
+              <p className="text-white font-mono font-bold">${(stockIndicators as Record<string, number>).lastClose}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">Trend</span>
+              <p className={`font-bold ${(stockIndicators as Record<string, string>).trend === "bullish" ? "text-emerald-400" : (stockIndicators as Record<string, string>).trend === "bearish" ? "text-red-400" : "text-gray-400"}`}>
+                {((stockIndicators as Record<string, string>).trend || "").toUpperCase()}
+              </p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">RSI(14)</span>
+              <p className={`font-mono font-bold ${(stockIndicators as Record<string, number>).rsi14 > 70 ? "text-red-400" : (stockIndicators as Record<string, number>).rsi14 < 30 ? "text-emerald-400" : "text-gray-300"}`}>
+                {(stockIndicators as Record<string, number>).rsi14}
+              </p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">1d Change</span>
+              <p className={`font-mono font-bold ${(stockIndicators as Record<string, number>).change1dPct > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {(stockIndicators as Record<string, number>).change1dPct > 0 ? "+" : ""}{(stockIndicators as Record<string, number>).change1dPct}%
+              </p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">SMA20</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).sma20}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">SMA50</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).sma50}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">VWAP</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).vwap}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">ATR(14)</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).atr14}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">MACD</span>
+              <p className={`font-mono font-bold ${(stockIndicators as Record<string, number>).macd > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {(stockIndicators as Record<string, number>).macd}
+              </p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">BB Upper</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).bbUpper}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">BB Lower</span>
+              <p className="text-gray-300 font-mono">${(stockIndicators as Record<string, number>).bbLower}</p>
+            </div>
+            <div className="bg-gray-900/50 rounded p-2">
+              <span className="text-gray-500">Vol Ratio</span>
+              <p className={`font-mono font-bold ${(stockIndicators as Record<string, number>).volumeRatio > 1.5 ? "text-amber-400" : "text-gray-300"}`}>
+                {(stockIndicators as Record<string, number>).volumeRatio}x
+              </p>
+            </div>
+          </div>
+          {(stockIndicators as Record<string, number[]>).support?.length > 0 && (
+            <div className="flex gap-4 mt-2 text-xs">
+              <span className="text-gray-500">Support: <span className="text-emerald-400 font-mono">${(stockIndicators as Record<string, number[]>).support.join(", $")}</span></span>
+              <span className="text-gray-500">Resistance: <span className="text-red-400 font-mono">${(stockIndicators as Record<string, number[]>).resistance.join(", $")}</span></span>
+            </div>
+          )}
         </div>
       )}
 

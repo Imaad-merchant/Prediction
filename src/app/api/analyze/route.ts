@@ -12,6 +12,7 @@ export async function POST(req: Request) {
       endDate,
       description,
       category,
+      stockData,
     } = await req.json();
 
     if (!question) {
@@ -44,8 +45,34 @@ METHODOLOGY - Follow these steps IN ORDER:
    - Market volume ($${volume}) indicates attention/information
    - Time until resolution (${endDate})
    ${description ? `- Description: ${description}` : ""}
+${stockData ? `
+3b. QUANTITATIVE ANALYSIS (Stock/Futures Data Provided):
+   You have real market data. Perform a full quant analysis using these strategies:
 
-4. KEY FACTORS: List 3-6 specific factors, each marked as supporting (FOR) or opposing (AGAINST) the outcome, with weight (HIGH/MEDIUM/LOW). Use specific facts, not generalities.
+   TECHNICAL INDICATORS PROVIDED:
+   - Price: $${stockData.indicators?.lastClose} | SMA20: $${stockData.indicators?.sma20} | SMA50: $${stockData.indicators?.sma50}
+   - EMA12: $${stockData.indicators?.ema12} | EMA26: $${stockData.indicators?.ema26}
+   - RSI(14): ${stockData.indicators?.rsi14} | ATR(14): $${stockData.indicators?.atr14}
+   - VWAP: $${stockData.indicators?.vwap} | Z-Score from VWAP: ${stockData.indicators?.zScore}
+   - Bollinger Bands: Upper $${stockData.indicators?.bbUpper} | Lower $${stockData.indicators?.bbLower}
+   - MACD: ${stockData.indicators?.macd} | Signal: ${stockData.indicators?.macdSignal}
+   - Volume: ${stockData.indicators?.volume} (${stockData.indicators?.volumeRatio}x avg)
+   - Changes: 1d ${stockData.indicators?.change1dPct}% | 5d ${stockData.indicators?.change5dPct}% | 20d ${stockData.indicators?.change20dPct}%
+   - Trend: ${stockData.indicators?.trend}
+   - Support: ${stockData.indicators?.support?.join(', ')} | Resistance: ${stockData.indicators?.resistance?.join(', ')}
+
+   STRATEGIES TO APPLY:
+   a) TREND ANALYSIS: Is price above/below SMA20 and SMA50? Golden/death cross? EMA alignment?
+   b) MOMENTUM: RSI overbought (>70) or oversold (<30)? MACD crossover direction?
+   c) VOLATILITY REGIME: ATR level relative to price. Bollinger squeeze or expansion? Are we in high or low vol?
+   d) MEAN REVERSION: Z-score from VWAP. If |Z| > 2, mean reversion likely. Price near Bollinger bands?
+   e) VOLUME CONFIRMATION: Is volume confirming the move? Volume ratio > 1.5 = strong conviction.
+   f) SUPPORT/RESISTANCE: Is price near key levels? Breakout or rejection likely?
+   g) ICT CONCEPTS: Look for fair value gaps, order blocks, liquidity sweeps based on the price action.
+
+   Use these quant signals to inform your probability estimate. If the data strongly supports or contradicts the market question, weight it heavily.
+` : ""}
+4. KEY FACTORS: List 3-6 specific factors, each marked as supporting (FOR) or opposing (AGAINST) the outcome, with weight (HIGH/MEDIUM/LOW). Use specific facts, not generalities. ${stockData ? "Include at least 2 factors from the quantitative analysis above." : ""}
 
 5. ADJUSTMENT: Starting from the base rate, adjust up or down based on each factor. Show your reasoning for each adjustment. Avoid anchoring too heavily to the current market price -- the market can be wrong.
 

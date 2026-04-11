@@ -103,6 +103,9 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
     );
   }
 
+  const isBinary = market.outcomes.length === 2 &&
+    market.outcomes[0].toLowerCase() === "yes" &&
+    market.outcomes[1].toLowerCase() === "no";
   const yesPrice = market.outcomePrices[0] || 0;
   const noPrice = market.outcomePrices[1] || 0;
   const yesPct = Math.round(yesPrice * 100);
@@ -140,7 +143,7 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
             {market.category && <Badge variant="outline">{market.category}</Badge>}
             <span className="text-gray-500">Ends {formatDate(market.endDate)}</span>
             <a
-              href={`https://polymarket.com/event/${market.slug}`}
+              href={`https://polymarket.com/market/${market.slug}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-1"
@@ -152,40 +155,69 @@ export default function MarketDetailPage({ params }: { params: Promise<{ slug: s
       </div>
 
       {/* Price Display */}
-      <div className="flex items-center gap-4 mb-6 p-4 bg-gray-900 rounded-xl border border-gray-800">
-        <div className="flex-1">
-          <div className="flex items-center gap-6">
-            <div>
-              <p className="text-xs text-gray-500 mb-1">YES</p>
-              <p className="text-3xl font-bold text-emerald-400">{yesPct}c</p>
+      {isBinary ? (
+        <div className="flex items-center gap-4 mb-6 p-4 bg-gray-900 rounded-xl border border-gray-800">
+          <div className="flex-1">
+            <div className="flex items-center gap-6">
+              <div>
+                <p className="text-xs text-gray-500 mb-1">YES</p>
+                <p className="text-3xl font-bold text-emerald-400">{yesPct}c</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">NO</p>
+                <p className="text-3xl font-bold text-red-400">{noPct}c</p>
+              </div>
             </div>
-            <div>
-              <p className="text-xs text-gray-500 mb-1">NO</p>
-              <p className="text-3xl font-bold text-red-400">{noPct}c</p>
+          </div>
+          <div className="flex-1">
+            <div className="h-3 bg-gray-800 rounded-full overflow-hidden flex">
+              <div className="h-full bg-emerald-500 rounded-l-full transition-all" style={{ width: `${yesPct}%` }} />
+              <div className="h-full bg-red-500 rounded-r-full transition-all" style={{ width: `${noPct}%` }} />
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>Yes {yesPct}%</span>
+              <span>No {noPct}%</span>
             </div>
           </div>
-        </div>
-        <div className="flex-1">
-          <div className="h-3 bg-gray-800 rounded-full overflow-hidden flex">
-            <div
-              className="h-full bg-emerald-500 rounded-l-full transition-all"
-              style={{ width: `${yesPct}%` }}
-            />
-            <div
-              className="h-full bg-red-500 rounded-r-full transition-all"
-              style={{ width: `${noPct}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-xs text-gray-500 mt-1">
-            <span>Yes {yesPct}%</span>
-            <span>No {noPct}%</span>
+          <div className="text-right">
+            <p className="text-xs text-gray-500">Volume</p>
+            <p className="text-lg font-semibold text-white">{formatCurrency(market.volume)}</p>
           </div>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-gray-500">Volume</p>
-          <p className="text-lg font-semibold text-white">{formatCurrency(market.volume)}</p>
+      ) : (
+        <div className="mb-6 bg-gray-900 rounded-xl border border-gray-800 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs text-gray-500">{market.outcomes.length} Outcomes</p>
+            <p className="text-xs text-gray-500">Volume: <span className="text-white font-semibold">{formatCurrency(market.volume)}</span></p>
+          </div>
+          <div className="space-y-2">
+            {market.outcomes.map((outcome, i) => {
+              const price = market.outcomePrices[i] || 0;
+              const pct = Math.round(price * 100);
+              return (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="text-sm text-gray-300 w-32 truncate font-medium" title={outcome}>
+                    {outcome}
+                  </span>
+                  <div className="flex-1 h-6 bg-gray-800 rounded-full overflow-hidden relative">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${Math.max(pct, 2)}%`,
+                        backgroundColor: pct >= 50 ? "#10b981" : pct >= 20 ? "#06b6d4" : "#6b7280",
+                      }}
+                    />
+                    <span className="absolute inset-0 flex items-center px-2 text-xs font-semibold text-white">
+                      {pct}%
+                    </span>
+                  </div>
+                  <span className="text-sm font-mono text-gray-400 w-12 text-right">{pct}c</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-gray-800 pb-px">
