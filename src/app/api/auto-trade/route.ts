@@ -15,6 +15,8 @@ import {
   scoreSettlementArbitrage,
 } from "@/lib/trading";
 
+export const maxDuration = 60;
+
 const DATA_DIR = process.env.VERCEL
   ? join("/tmp", "data")
   : join(process.cwd(), "data");
@@ -41,10 +43,11 @@ function getBaseUrl(req: Request): string {
   return url.origin;
 }
 
-// Fetch orderbook asks for slippage estimation
 async function fetchAsks(tokenId: string): Promise<OrderLevel[]> {
   try {
-    const res = await fetch(`${CLOB_API}/book?token_id=${tokenId}`);
+    const res = await fetch(`${CLOB_API}/book?token_id=${tokenId}`, {
+      signal: AbortSignal.timeout(3000),
+    });
     if (!res.ok) return [];
     const book = await res.json();
     return (book.asks || [])
@@ -58,16 +61,55 @@ async function fetchAsks(tokenId: string): Promise<OrderLevel[]> {
   }
 }
 
-// Fetch current price for stop-loss checks
 async function fetchCurrentPrice(tokenId: string): Promise<number | null> {
   try {
-    const res = await fetch(`${CLOB_API}/price?token_id=${tokenId}&side=buy`);
+    const res = await fetch(`${CLOB_API}/price?token_id=${tokenId}&side=buy`, {
+      signal: AbortSignal.timeout(3000),
+    });
     if (!res.ok) return null;
     const data = await res.json();
     return parseFloat(data.price) || null;
   } catch {
     return null;
   }
+}
+
+// Synthetic analysis for settlement arb — no GPT-4 needed
+function createArbAnalysis(
+  opp: Opportunity,
+  arbScore: ReturnType<typeof scoreSettlementArbitrage>
+): AnalysisResult {
+  return {
+    predictedProbability: opp.gammaProbability * 100,
+    confidence: arbScore.confidence > 0.7 ? "High" : "Medium",
+    recommendation: "BUY YES",
+    edge: arbScore.netEdge,
+    reasoning: {
+      decomposition: [`Settlement arb: buy at ${(opp.realAskPrice * 100).toFixed(1)}c, redeem at $1`],
+      baseRate: `Market at ${(opp.gammaProbability * 100).toFixed(0)}% with ${opp.hoursLeft.toFixed(1)}h left`,
+      keyFactors: [
+        { factor: `Net edge ${arbScore.netEdge.toFixed(1)}% after ${2}% fee`, direction: "for", weight: "high" },
+        { factor: `${opp.hoursLeft.toFixed(1)} hours to resolution`, direction: "for", weight: "medium" },
+      ],
+      newsContext: "Settlement arbitrage — near-certain market",
+      uncertainties: ["Market could resolve unexpectedly against majority"],
+    },
+    riskAssessment: {
+      liquidityRisk: opp.liquidity > 10000 ? "Low" : "Medium",
+      timingRisk: `${opp.hoursLeft.toFixed(1)}h to close`,
+      marketEfficiency: "High probability priced in",
+    },
+    summary: `Settlement arb: ${arbScore.netEdge.toFixed(1)}% net edge, ${(arbScore.confidence * 100).toFixed(0)}% confidence`,
+    positionSizing: {
+      direction: "bullish",
+      materiality: arbScore.confidence,
+      suggestedSize: 10,
+      maxBuyPrice: 0.99,
+      kellyFraction: 0.25,
+      dollarEdge: arbScore.netEdge / 100,
+      profitPerShare: 1 - opp.realAskPrice,
+    },
+  };
 }
 
 export async function POST(req: Request) {
@@ -81,22 +123,27 @@ export async function POST(req: Request) {
     const stoppedTrades: Trade[] = [];
     let tradesAnalyzed = 0;
 
-    // Step 1: Check stop-losses on open positions
-    if (config.stopLossPercent > 0) {
-      for (let i = 0; i < store.trades.length; i++) {
-        if (store.trades[i].status !== "open") continue;
-        const currentPrice = await fetchCurrentPrice(store.trades[i].tokenId);
-        if (currentPrice !== null) {
-          const updated = checkStopLoss(store.trades[i], currentPrice, config);
-          if (updated.status === "stopped_out") {
-            store.trades[i] = updated;
-            stoppedTrades.push(updated);
-          }
+    // Step 1: Check stop-losses in PARALLEL
+    const openTrades = store.trades.filter((t) => t.status === "open");
+    if (config.stopLossPercent > 0 && openTrades.length > 0) {
+      const priceChecks = await Promise.allSettled(
+        openTrades.map((t) => fetchCurrentPrice(t.tokenId))
+      );
+      for (let i = 0; i < openTrades.length; i++) {
+        const result = priceChecks[i];
+        const price = result.status === "fulfilled" ? result.value : null;
+        if (price === null) continue;
+        const idx = store.trades.findIndex((t) => t.id === openTrades[i].id);
+        if (idx === -1) continue;
+        const updated = checkStopLoss(store.trades[idx], price, config);
+        if (updated.status === "stopped_out") {
+          store.trades[idx] = updated;
+          stoppedTrades.push(updated);
         }
       }
     }
 
-    // Step 2: Check/settle expired positions (with fee accounting)
+    // Step 2: Settle expired positions
     for (let i = 0; i < store.trades.length; i++) {
       if (store.trades[i].status === "open") {
         const updated = checkSettlement(store.trades[i], config.takerFeePercent);
@@ -107,36 +154,36 @@ export async function POST(req: Request) {
       }
     }
 
-    // Step 3: Recalculate portfolio after settlements + stop-losses
+    // Step 3: Recalculate portfolio
     store.portfolio = calculatePortfolioStats(store.trades, config);
-
-    // Count open positions
     const openPositionCount = store.trades.filter((t) => t.status === "open").length;
 
-    // Step 4: Scan for new opportunities
+    // Step 4: Scan opportunities (with timeout)
     let opportunities: Opportunity[] = [];
     try {
-      const oppRes = await fetch(`${BASE_URL}/api/opportunities`);
+      const oppRes = await fetch(`${BASE_URL}/api/opportunities`, {
+        signal: AbortSignal.timeout(15000),
+      });
       const oppJson = await oppRes.json();
       opportunities = oppJson.data || [];
-    } catch {
-      // Opportunities fetch failed
+    } catch (e) {
+      console.error("Opportunities fetch failed:", e);
     }
 
-    // Step 5: Score and filter by strategy
+    // Step 5: Score and categorize
     type ScoredOpp = Opportunity & {
       strategyType: "expiry_convergence" | "settlement_arbitrage";
-      arbScore?: number;
+      arbData?: ReturnType<typeof scoreSettlementArbitrage>;
     };
 
     const scoredOpps: ScoredOpp[] = [];
 
     for (const opp of opportunities) {
-      // Skip if already have a position
-      if (store.trades.find((t) => t.marketId === opp.id && t.status === "open")) continue;
+      if (store.trades.find((t) => t.marketId === opp.id && t.status === "open"))
+        continue;
 
+      // Settlement arbitrage
       if (config.strategy === "settlement_arbitrage" || config.strategy === "combined") {
-        // Settlement arbitrage: high-price tokens near resolution
         const arb = scoreSettlementArbitrage(
           opp.realAskPrice,
           opp.hoursLeft,
@@ -146,36 +193,34 @@ export async function POST(req: Request) {
           scoredOpps.push({
             ...opp,
             strategyType: "settlement_arbitrage",
-            arbScore: arb.confidence,
+            arbData: arb,
             edge: arb.netEdge,
           });
+          continue; // Don't also add as expiry convergence
         }
       }
 
+      // Expiry convergence
       if (config.strategy === "expiry_convergence" || config.strategy === "combined") {
-        // Expiry convergence: existing strategy (lower price, higher edge)
-        if (opp.realAskPrice < 0.95 && opp.profitPerShare > 0.02) {
-          scoredOpps.push({
-            ...opp,
-            strategyType: "expiry_convergence",
-          });
+        if (opp.profitPerShare > 0.02) {
+          scoredOpps.push({ ...opp, strategyType: "expiry_convergence" });
         }
       }
     }
 
-    // Sort: settlement arb by confidence, expiry by profit
+    // Sort: arb by confidence, expiry by profit
     scoredOpps.sort((a, b) => {
-      if (a.strategyType === "settlement_arbitrage" && b.strategyType === "settlement_arbitrage") {
-        return (b.arbScore ?? 0) - (a.arbScore ?? 0);
-      }
+      if (a.arbData && b.arbData) return b.arbData.confidence - a.arbData.confidence;
+      if (a.arbData) return -1;
+      if (b.arbData) return 1;
       return b.profitPerShare - a.profitPerShare;
     });
 
-    // Step 6: Analyze and execute top candidates
+    // Step 6: Execute trades
     let tradesThisRun = 0;
     const maxTradesPerRun = 3;
 
-    for (const opp of scoredOpps.slice(0, 8)) {
+    for (const opp of scoredOpps.slice(0, 5)) {
       if (tradesThisRun >= maxTradesPerRun) break;
       if (openPositionCount + tradesThisRun >= config.maxPositions) break;
       if (store.portfolio.cashBalance < 1) break;
@@ -183,23 +228,30 @@ export async function POST(req: Request) {
       tradesAnalyzed++;
 
       try {
-        // Run Superforecaster analysis
-        const analyzeRes = await fetch(`${BASE_URL}/api/analyze`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question: opp.question,
-            currentYesPrice: Math.round(opp.gammaProbability * 100),
-            currentNoPrice: Math.round((1 - opp.gammaProbability) * 100),
-            volume: Math.round(opp.volume),
-            liquidity: Math.round(opp.liquidity),
-            endDate: opp.endDate,
-          }),
-        });
-        const analyzeJson = await analyzeRes.json();
-        if (analyzeJson.error) continue;
+        let analysis: AnalysisResult;
 
-        const analysis: AnalysisResult = analyzeJson.data;
+        if (opp.strategyType === "settlement_arbitrage" && opp.arbData) {
+          // Settlement arb: skip GPT-4, use synthetic analysis
+          analysis = createArbAnalysis(opp, opp.arbData);
+        } else {
+          // Expiry convergence: run AI analysis (with timeout)
+          const analyzeRes = await fetch(`${BASE_URL}/api/analyze`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question: opp.question,
+              currentYesPrice: Math.round(opp.gammaProbability * 100),
+              currentNoPrice: Math.round((1 - opp.gammaProbability) * 100),
+              volume: Math.round(opp.volume),
+              liquidity: Math.round(opp.liquidity),
+              endDate: opp.endDate,
+            }),
+            signal: AbortSignal.timeout(20000),
+          });
+          const analyzeJson = await analyzeRes.json();
+          if (analyzeJson.error) continue;
+          analysis = analyzeJson.data;
+        }
 
         // Should we take this trade?
         const decision = shouldTakeTrade(
@@ -217,38 +269,36 @@ export async function POST(req: Request) {
           config
         );
 
-        // Slippage gate: fetch orderbook and estimate fill quality
+        // Slippage gate
         const asks = await fetchAsks(opp.tokenId);
         const slippage = estimateSlippage(asks, betDollars);
         const slippageCheck = passesSlippageGate(slippage, config);
         if (!slippageCheck.pass) continue;
 
-        // Use VWAP as effective entry price if available
         const effectivePrice = slippage.vwap > 0 ? slippage.vwap : opp.realAskPrice;
         const shares = Math.floor(betDollars / effectivePrice);
         if (shares < 1) continue;
 
-        // Create trade with fees and stop-loss
+        // Create trade
         const trade = simulateTradeEntry(
           { ...opp, realAskPrice: effectivePrice },
           analysis,
           shares,
           config,
           slippage.slippagePercent,
-          opp.strategyType ?? "expiry_convergence"
+          opp.strategyType
         );
         store.trades.unshift(trade);
         newTrades.push(trade);
         tradesThisRun++;
 
-        // Update portfolio
         store.portfolio = calculatePortfolioStats(store.trades, config);
-      } catch {
-        // Analysis failed for this opportunity
+      } catch (e) {
+        console.error(`Trade analysis failed for ${opp.question}:`, e);
       }
     }
 
-    // Final portfolio recalculation
+    // Save
     store.portfolio = calculatePortfolioStats(store.trades, config);
     store.config.lastRunAt = new Date().toISOString();
     await writeStore(store);
@@ -262,8 +312,12 @@ export async function POST(req: Request) {
         tradesAnalyzed,
         opportunitiesFound: opportunities.length,
         strategiesUsed: {
-          settlementArbitrage: scoredOpps.filter((o) => o.strategyType === "settlement_arbitrage").length,
-          expiryConvergence: scoredOpps.filter((o) => o.strategyType === "expiry_convergence").length,
+          settlementArbitrage: scoredOpps.filter(
+            (o) => o.strategyType === "settlement_arbitrage"
+          ).length,
+          expiryConvergence: scoredOpps.filter(
+            (o) => o.strategyType === "expiry_convergence"
+          ).length,
         },
       },
     });
