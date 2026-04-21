@@ -233,12 +233,12 @@ export async function POST(req: Request) {
         let edgeScore: number;
 
         if (opp.strategyType === "settlement_arbitrage" && opp.arbData) {
-          // Settlement arb: synthetic analysis, no GPT call needed
+          // Settlement arb: synthetic analysis, edge score from arb net edge (not model vs market)
           analysis = createArbAnalysis(opp, opp.arbData);
-          const modelProb = analysis.predictedProbability / 100;
-          const marketProb = opp.gammaProbability;
           const liqScore = Math.min(opp.liquidity / 10000, 1);
-          edgeScore = calculateEdgeScore(modelProb, marketProb, liqScore);
+          // Convert net edge % to 0-1 scale; floor at 0.05 if viable
+          edgeScore = Math.max(0.05, (opp.arbData.netEdge / 100) * Math.max(liqScore, 0.3));
+          edgeScore = Math.round(edgeScore * 1000) / 1000;
         } else {
           // Expiry convergence: use calibration engine with evidence pipeline
           const calibrateRes = await fetch(`${BASE_URL}/api/calibrate`, {
@@ -262,23 +262,23 @@ export async function POST(req: Request) {
           const rawEdgePp = cal.edge * 100; // percentage points
           const calibratedEdge = cal.edge * cal.confidence_discount * cal.liquidity_discount;
 
-          // Structural convergence bonus: markets 70%+ with <14 days left have built-in
-          // convergence edge (price → 1 at settlement) even when GPT agrees with market
-          const hasConvergenceEdge = opp.gammaProbability >= 0.70 && opp.hoursLeft < 336;
+          // Structural convergence bonus: markets 60%+ have built-in convergence edge
+          // (price tends to → 1 or 0 at settlement) even when GPT anchors to market price
+          const hasConvergenceEdge = opp.gammaProbability >= 0.60 && opp.hoursLeft < 336;
+          const structuralEdge = (1 - opp.realAskPrice) * 0.5; // half the distance to $1
           const effectiveEdgePp = Math.max(
             Math.abs(rawEdgePp),
-            hasConvergenceEdge ? (1 - opp.realAskPrice) * 100 * 0.5 : 0
+            hasConvergenceEdge ? structuralEdge * 100 : 0
           );
 
           edgeScore = hasConvergenceEdge
-            ? Math.max(Math.abs(calibratedEdge), (1 - opp.realAskPrice) * 0.3)
+            ? Math.max(Math.abs(calibratedEdge), structuralEdge * 0.4)
             : Math.abs(calibratedEdge);
-          edgeScore = Math.round(edgeScore * 1000) / 1000;
+          edgeScore = Math.round(Math.max(edgeScore, 0.02) * 1000) / 1000;
 
-          // Recommendation: favor BUY when market is in convergence zone OR GPT shows edge
+          // Recommendation: favor BUY in convergence zone OR when GPT shows edge
           let recommendation: "BUY YES" | "BUY NO" | "HOLD" | "AVOID";
           if (hasConvergenceEdge && opp.realAskPrice < 0.95) {
-            // Structural play — buy to hold until expiry
             recommendation = opp.side === "YES" ? "BUY YES" : "BUY NO";
           } else if (effectiveEdgePp >= 2 && cal.confidence_discount >= 0.4) {
             recommendation = rawEdgePp > 0 ? "BUY YES" : "BUY NO";
