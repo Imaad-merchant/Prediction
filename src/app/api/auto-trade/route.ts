@@ -16,6 +16,7 @@ import {
   scoreSettlementArbitrage,
 } from "@/lib/trading";
 import { placeLiveOrder } from "@/lib/polymarket-clob";
+import { computeBtcSignal, isBtcShortTermMarket } from "@/lib/btc-signal";
 
 export const maxDuration = 60;
 
@@ -174,6 +175,11 @@ export async function POST(req: Request) {
       console.error("Opportunities fetch failed:", e);
     }
 
+    // Apply market filter (e.g. BTC hourly only)
+    if (config.marketFilter === "btc_hourly") {
+      opportunities = opportunities.filter((o) => isBtcShortTermMarket(o.question));
+    }
+
     // Step 5: Score and categorize
     type ScoredOpp = Opportunity & {
       strategyType: "expiry_convergence" | "settlement_arbitrage";
@@ -185,6 +191,12 @@ export async function POST(req: Request) {
     for (const opp of opportunities) {
       if (store.trades.find((t) => t.marketId === opp.id && t.status === "open"))
         continue;
+
+      // BTC short-term markets: always route through signal engine (never arb)
+      if (isBtcShortTermMarket(opp.question)) {
+        scoredOpps.push({ ...opp, strategyType: "expiry_convergence" });
+        continue;
+      }
 
       if (config.strategy === "settlement_arbitrage" || config.strategy === "combined") {
         const arb = scoreSettlementArbitrage(
@@ -240,6 +252,65 @@ export async function POST(req: Request) {
           // Convert net edge % to 0-1 scale; floor at 0.05 if viable
           edgeScore = Math.max(0.05, (opp.arbData.netEdge / 100) * Math.max(liqScore, 0.3));
           edgeScore = Math.round(edgeScore * 1000) / 1000;
+        } else if (isBtcShortTermMarket(opp.question)) {
+          // === BTC SHORT-TERM: use quantitative signal engine (Binance klines + TA) ===
+          // Parse horizon from market end date (typically 5-min or 1-hour window)
+          const horizonMin = Math.max(1, Math.min(60, Math.round(opp.hoursLeft * 60)));
+          let signal;
+          try {
+            signal = await computeBtcSignal(horizonMin);
+          } catch (sigErr) {
+            rejections.push({
+              question: opp.question.slice(0, 80),
+              reason: `BTC signal failed: ${sigErr instanceof Error ? sigErr.message : "unknown"}`,
+            });
+            continue;
+          }
+
+          const modelProbYes = signal.predictedUpProbability;
+          const marketProbYes = opp.side === "YES" ? opp.gammaProbability : 1 - opp.gammaProbability;
+
+          // Edge signed from BTC-UP perspective; convert to side of the opportunity
+          const edgeYesPp = (modelProbYes - marketProbYes) * 100;
+          const edgePp = opp.side === "YES" ? edgeYesPp : -edgeYesPp;
+
+          const liqScore = Math.min(opp.liquidity / 5000, 1);
+          const calibratedEdge = (edgePp / 100) * signal.confidence * liqScore;
+          edgeScore = Math.round(Math.max(Math.abs(calibratedEdge), 0.01) * 1000) / 1000;
+
+          // For BTC hourly: require moderate confidence AND edge ≥ 3pp to trade
+          let recommendation: "BUY YES" | "BUY NO" | "HOLD" | "AVOID";
+          if (Math.abs(edgePp) >= 3 && signal.confidence >= 0.35) {
+            recommendation = edgePp > 0 ? "BUY YES" : "BUY NO";
+          } else if (Math.abs(edgePp) >= 1.5) {
+            recommendation = "HOLD";
+          } else {
+            recommendation = "AVOID";
+          }
+
+          analysis = {
+            predictedProbability: (opp.side === "YES" ? modelProbYes : 1 - modelProbYes) * 100,
+            confidence: signal.confidence >= 0.6 ? "High" : signal.confidence >= 0.35 ? "Medium" : "Low",
+            recommendation,
+            edge: Math.round(edgePp * 10) / 10,
+            reasoning: {
+              decomposition: [`BTC direction signal (${horizonMin}min horizon)`],
+              baseRate: `Momentum: ${signal.momentum}, RSI ${signal.rsi14}, vol ${signal.volumeRatio}x`,
+              keyFactors: [
+                { factor: `Model p(UP) = ${(modelProbYes * 100).toFixed(1)}% vs market ${(marketProbYes * 100).toFixed(1)}%`, direction: edgePp > 0 ? "for" : "against", weight: "high" },
+                { factor: `Signal confidence ${(signal.confidence * 100).toFixed(0)}%`, direction: signal.confidence > 0.5 ? "for" : "against", weight: "medium" },
+                { factor: `BTC 5m change ${signal.priceChange5m >= 0 ? "+" : ""}${signal.priceChange5m}%`, direction: signal.priceChange5m > 0 ? "for" : "against", weight: "medium" },
+              ],
+              newsContext: signal.reasoning.join(" · "),
+              uncertainties: ["Short-horizon BTC moves have low R²; market can reverse fast"],
+            },
+            riskAssessment: {
+              liquidityRisk: opp.liquidity > 5000 ? "Low" : opp.liquidity > 1000 ? "Medium" : "High",
+              timingRisk: `${horizonMin}min to resolution`,
+              marketEfficiency: "BTC short-term is highly efficient; edge requires disciplined filter",
+            },
+            summary: `BTC ${signal.momentum} @ $${signal.currentPrice} | p(UP)=${(modelProbYes * 100).toFixed(1)}% vs mkt ${(marketProbYes * 100).toFixed(1)}% | edge ${edgePp.toFixed(1)}pp × conf ${signal.confidence.toFixed(2)} × liq ${liqScore.toFixed(2)} = ${(calibratedEdge * 100).toFixed(1)}pp net`,
+          };
         } else {
           // Expiry convergence: use calibration engine with evidence pipeline
           const calibrateRes = await fetch(`${BASE_URL}/api/calibrate`, {

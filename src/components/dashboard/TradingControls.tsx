@@ -38,6 +38,7 @@ export default function TradingControls({
   const [stopLoss, setStopLoss] = useState(String(config.stopLossPercent ?? 15));
   const [slippageTolerance, setSlippageTolerance] = useState(String(config.slippageTolerancePercent ?? 5));
   const [minEdge, setMinEdge] = useState(String(config.minEdge ?? 3));
+  const [marketFilter, setMarketFilter] = useState<"all" | "btc_hourly">(config.marketFilter ?? "all");
 
   const handleSave = () => {
     onConfigUpdate({
@@ -50,8 +51,24 @@ export default function TradingControls({
       stopLossPercent: Number(stopLoss) || 0,
       slippageTolerancePercent: Number(slippageTolerance) || 5,
       minEdge: Number(minEdge) || 3,
+      marketFilter,
     });
     setShowSettings(false);
+  };
+
+  const handleInlineMarketFilterChange = (filter: "all" | "btc_hourly") => {
+    setMarketFilter(filter);
+    onConfigUpdate({ marketFilter: filter });
+  };
+
+  const handleModeChange = (mode: "paper" | "live") => {
+    if (mode === "live" && config.mode !== "live") {
+      const ok = confirm(
+        "⚠️ LIVE MODE uses real money.\n\nSwitch to live trading? (You can switch back anytime.)"
+      );
+      if (!ok) return;
+    }
+    onConfigUpdate({ mode });
   };
 
   const handleReset = () => {
@@ -68,8 +85,8 @@ export default function TradingControls({
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm text-gray-400">
             <span>Bankroll: <span className="text-white font-semibold">${config.bankroll}</span></span>
             <span className="text-gray-700">|</span>
@@ -77,7 +94,37 @@ export default function TradingControls({
             <span className="text-gray-700">|</span>
             <span>Positions: <span className="text-white">{config.maxPositions ?? 5}</span></span>
           </div>
-          <Badge variant="outline" className="text-[10px]">Paper Mode</Badge>
+
+          {/* Mode Dropdown */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wide">Mode</span>
+            <select
+              value={config.mode || "paper"}
+              onChange={(e) => handleModeChange(e.target.value as "paper" | "live")}
+              className={`text-xs px-2 py-1 rounded-md border bg-gray-800 font-semibold cursor-pointer transition-colors ${
+                config.mode === "live"
+                  ? "border-red-500/50 text-red-400 bg-red-500/10"
+                  : "border-gray-700 text-gray-300"
+              }`}
+            >
+              <option value="paper">Paper</option>
+              <option value="live">Live (Real $)</option>
+            </select>
+          </div>
+
+          {/* Market Filter Dropdown */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wide">Market</span>
+            <select
+              value={marketFilter}
+              onChange={(e) => handleInlineMarketFilterChange(e.target.value as "all" | "btc_hourly")}
+              className="text-xs px-2 py-1 rounded-md border border-gray-700 bg-gray-800 text-gray-300 cursor-pointer"
+            >
+              <option value="all">All Markets</option>
+              <option value="btc_hourly">BTC Up/Down Only</option>
+            </select>
+          </div>
+
           <Badge variant="outline" className="text-[10px] border-cyan-800 text-cyan-400">
             <Zap className="w-2.5 h-2.5 mr-0.5" />
             {strategyLabel}

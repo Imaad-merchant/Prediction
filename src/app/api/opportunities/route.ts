@@ -108,8 +108,23 @@ export async function GET() {
       let gammaProbability: number;
       let tokenId: string;
 
-      // Wide range: 0.50-0.995 (captures both arb and expiry convergence opportunities)
-      if (yesProb >= 0.50 && yesProb <= 0.995) {
+      // BTC Up or Down markets get a special pass — they're 50/50 by design
+      // and edge comes from the signal engine, not price positioning.
+      const q = String(m.question || "").toLowerCase();
+      const isBtcShortTerm = /bitcoin\s+up\s+or\s+down/.test(q) || /btc\s+up\s+or\s+down/.test(q);
+
+      if (isBtcShortTerm) {
+        // Take the cheaper side as default; signal engine will decide if we buy YES or NO
+        if (yesProb <= noProb) {
+          side = "YES";
+          gammaProbability = yesProb;
+          tokenId = clobTokenIds[0];
+        } else {
+          side = "NO";
+          gammaProbability = noProb;
+          tokenId = clobTokenIds[1];
+        }
+      } else if (yesProb >= 0.50 && yesProb <= 0.995) {
         side = "YES";
         gammaProbability = yesProb;
         tokenId = clobTokenIds[0];
@@ -124,7 +139,9 @@ export async function GET() {
       if (!tokenId) continue;
 
       const volume = Number(m.volume || 0);
-      if (volume < 50) continue;
+      // BTC short-term markets have tiny volume per window — allow down to $10
+      const minVol = isBtcShortTerm ? 10 : 50;
+      if (volume < minVol) continue;
 
       candidates.push({
         market: m,

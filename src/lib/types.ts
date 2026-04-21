@@ -157,6 +157,22 @@ export interface TradingConfig {
   portfolioStopPercent: number; // pause new entries if total unrealized < -X% (default 15%)
   timeExitHours: number; // close if < N hours to resolution + price > 0.85 (default 24)
   minAskSize: number; // min best-ask size in $ to avoid illiquid fills (default 500)
+  // Market filter — "all" trades everything, "btc_hourly" restricts to BTC up/down markets
+  marketFilter?: "all" | "btc_hourly";
+}
+
+export interface BtcSignal {
+  currentPrice: number;
+  priceChange1m: number;
+  priceChange5m: number;
+  priceChange15m: number;
+  priceChange1h: number;
+  rsi14: number; // 0-100
+  volumeRatio: number; // current vs 20-period avg
+  momentum: "strong_up" | "up" | "flat" | "down" | "strong_down";
+  predictedUpProbability: number; // 0-1
+  confidence: number; // 0-1
+  reasoning: string[];
 }
 
 export interface SlippageEstimate {

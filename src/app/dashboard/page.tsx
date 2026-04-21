@@ -9,6 +9,7 @@ import TradeHistory from "@/components/dashboard/TradeHistory";
 import ActivePositions from "@/components/dashboard/ActivePositions";
 import TradingControls from "@/components/dashboard/TradingControls";
 import LiveModePanel from "@/components/dashboard/LiveModePanel";
+import BtcSignalWidget from "@/components/dashboard/BtcSignalWidget";
 import { getBestWorstTrade } from "@/lib/trading";
 import { Loader2, BarChart2, CheckCircle, AlertTriangle, RefreshCw, Trophy, Skull } from "lucide-react";
 
@@ -392,6 +393,13 @@ export default function DashboardPage() {
           </div>
         );
       })()}
+
+      {/* BTC Signal Widget — shown when BTC filter is active */}
+      {store.config.marketFilter === "btc_hourly" && (
+        <div className="mb-4">
+          <BtcSignalWidget />
+        </div>
+      )}
 
       {/* Portfolio Overview — with live data */}
       <div className="mb-6">

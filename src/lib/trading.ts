@@ -34,6 +34,7 @@ export function defaultTradesStore(): TradesStore {
       portfolioStopPercent: 15,
       timeExitHours: 24,
       minAskSize: 500,
+      marketFilter: "all",
     },
     portfolio: {
       totalValue: 1000,
