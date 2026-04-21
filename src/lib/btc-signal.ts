@@ -12,7 +12,9 @@
 
 import type { BtcSignal } from "./types";
 
-const BINANCE_KLINES = "https://api.binance.com/api/v3/klines";
+// Coinbase public candles API — reliable from Vercel infrastructure (Binance blocks US IPs).
+// Granularity in seconds: 60 (1m), 300 (5m), 900 (15m), 3600 (1h), 21600 (6h), 86400 (1d)
+const COINBASE_CANDLES = "https://api.exchange.coinbase.com/products/BTC-USD/candles";
 
 interface Kline {
   openTime: number;
@@ -24,20 +26,37 @@ interface Kline {
   closeTime: number;
 }
 
+const INTERVAL_TO_GRANULARITY: Record<string, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+};
+
 async function fetchKlines(interval: string, limit: number): Promise<Kline[]> {
-  const url = `${BINANCE_KLINES}?symbol=BTCUSDT&interval=${interval}&limit=${limit}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) throw new Error(`Binance ${res.status}`);
-  const raw = (await res.json()) as unknown[][];
-  return raw.map((r) => ({
-    openTime: Number(r[0]),
-    open: Number(r[1]),
+  const granularity = INTERVAL_TO_GRANULARITY[interval] ?? 60;
+  // Coinbase returns at most 300 candles per call and newest-first.
+  const capped = Math.min(limit, 300);
+  const url = `${COINBASE_CANDLES}?granularity=${granularity}`;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(5000),
+    headers: { "User-Agent": "polypredict-signal/1.0" },
+  });
+  if (!res.ok) throw new Error(`Coinbase ${res.status}`);
+  const raw = (await res.json()) as number[][];
+  // Coinbase tuple: [time, low, high, open, close, volume] — seconds since epoch
+  const parsed = raw.map((r) => ({
+    openTime: Number(r[0]) * 1000,
+    low: Number(r[1]),
     high: Number(r[2]),
-    low: Number(r[3]),
+    open: Number(r[3]),
     close: Number(r[4]),
     volume: Number(r[5]),
-    closeTime: Number(r[6]),
+    closeTime: Number(r[0]) * 1000 + granularity * 1000,
   }));
+  // Sort ascending (oldest → newest) and trim to requested count
+  parsed.sort((a, b) => a.openTime - b.openTime);
+  return parsed.slice(-capped);
 }
 
 function calcRsi(closes: number[], period = 14): number {
