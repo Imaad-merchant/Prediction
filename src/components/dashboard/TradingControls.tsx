@@ -5,7 +5,7 @@ import type { TradingConfig } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Settings, Play, RotateCcw, Loader2, Shield, Zap, Target } from "lucide-react";
+import { Settings, Play, RotateCcw, Loader2, Shield, Zap, Target, Pause, Infinity as InfinityIcon } from "lucide-react";
 
 interface TradingControlsProps {
   config: TradingConfig;
@@ -13,6 +13,9 @@ interface TradingControlsProps {
   onRunAutoTrade: () => void;
   onReset: (bankroll: number, maxBet: number, dailyLimit: number) => void;
   autoTrading: boolean;
+  continuousMode: boolean;
+  onToggleContinuous: () => void;
+  nextRunIn?: number | null; // seconds
 }
 
 export default function TradingControls({
@@ -21,6 +24,9 @@ export default function TradingControls({
   onRunAutoTrade,
   onReset,
   autoTrading,
+  continuousMode,
+  onToggleContinuous,
+  nextRunIn,
 }: TradingControlsProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [bankroll, setBankroll] = useState(String(config.bankroll));
@@ -95,7 +101,7 @@ export default function TradingControls({
           </Button>
           <Button
             onClick={onRunAutoTrade}
-            disabled={autoTrading}
+            disabled={autoTrading || continuousMode}
             className={autoTrading ? "bg-gray-700" : "bg-cyan-500 hover:bg-cyan-600 text-black font-semibold"}
           >
             {autoTrading ? (
@@ -106,12 +112,46 @@ export default function TradingControls({
             ) : (
               <>
                 <Play className="w-4 h-4 mr-1.5" />
-                Run Auto-Trade
+                Run Once
+              </>
+            )}
+          </Button>
+          <Button
+            onClick={onToggleContinuous}
+            className={continuousMode
+              ? "bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40"
+              : "bg-emerald-500 hover:bg-emerald-600 text-black font-semibold"}
+          >
+            {continuousMode ? (
+              <>
+                <Pause className="w-4 h-4 mr-1.5" />
+                Stop Live
+              </>
+            ) : (
+              <>
+                <InfinityIcon className="w-4 h-4 mr-1.5" />
+                Go Live
               </>
             )}
           </Button>
         </div>
       </div>
+
+      {continuousMode && (
+        <div className="mt-2 flex items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            LIVE
+          </span>
+          <span className="text-gray-500">
+            {autoTrading
+              ? "Scanning markets..."
+              : nextRunIn != null
+                ? `Next scan in ${Math.max(0, nextRunIn)}s · exit checks every 15s`
+                : "Monitoring positions"}
+          </span>
+        </div>
+      )}
 
       {config.lastRunAt && (
         <p className="text-[10px] text-gray-600 mt-2">

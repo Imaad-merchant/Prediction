@@ -46,6 +46,9 @@ interface AutoTradeResult {
   rejections?: Rejection[];
 }
 
+const CONTINUOUS_STORAGE_KEY = "polypredict_continuous_mode";
+const AUTO_TRADE_INTERVAL_MS = 5 * 60 * 1000; // 5 min between auto-trade runs
+
 export default function DashboardPage() {
   const [store, setStore] = useState<TradesStore>(defaultTradesStore());
   const [loading, setLoading] = useState(true);
@@ -53,7 +56,13 @@ export default function DashboardPage() {
   const [lastResult, setLastResult] = useState<AutoTradeResult | null>(null);
   const [livePrices, setLivePrices] = useState<Record<string, number | null>>({});
   const [lastPriceUpdate, setLastPriceUpdate] = useState<string | null>(null);
+  const [continuousMode, setContinuousMode] = useState(false);
+  const [nextRunIn, setNextRunIn] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoTradeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAutoTradeRef = useRef<number>(0);
+  const autoTradingRef = useRef(false);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -67,7 +76,7 @@ export default function DashboardPage() {
     if (!loading) saveStore(store);
   }, [store, loading]);
 
-  // Fetch live prices for open positions
+  // Fetch live prices + check exit conditions client-side (SL/TP/time-exit)
   const fetchLivePrices = useCallback(async () => {
     const openTrades = store.trades.filter((t) => t.status === "open");
     if (openTrades.length === 0) return;
@@ -81,11 +90,33 @@ export default function DashboardPage() {
       });
       const json = await res.json();
       if (!json.error && json.data) {
-        setLivePrices(json.data);
+        const prices: Record<string, number | null> = json.data;
+        setLivePrices(prices);
         setLastPriceUpdate(new Date().toLocaleTimeString());
+
+        // Client-side exit check: trigger close for SL/TP/time-exit
+        for (const t of openTrades) {
+          const price = prices[t.tokenId];
+          if (price == null) continue;
+          const hoursLeft = (new Date(t.endDate).getTime() - Date.now()) / (1000 * 60 * 60);
+          const slHit = t.stopLossPrice != null && price <= t.stopLossPrice;
+          const tpHit = t.takeProfitPrice != null && price >= t.takeProfitPrice && hoursLeft >= store.config.timeExitHours;
+          const timeExit = hoursLeft < store.config.timeExitHours && price > 0.85;
+          if (slHit || tpHit || timeExit) {
+            try {
+              const closeRes = await fetch("/api/close-position", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ store, tradeId: t.id, currentPrice: price }),
+              });
+              const closeJson = await closeRes.json();
+              if (!closeJson.error && closeJson.data?.store) setStore(closeJson.data.store);
+            } catch {}
+          }
+        }
       }
     } catch {}
-  }, [store.trades]);
+  }, [store]);
 
   // Auto-poll prices every 15 seconds
   useEffect(() => {
@@ -146,9 +177,10 @@ export default function DashboardPage() {
     } catch {}
   };
 
-  const handleAutoTrade = async () => {
+  const handleAutoTrade = useCallback(async () => {
+    if (autoTradingRef.current) return; // prevent re-entry
+    autoTradingRef.current = true;
     setAutoTrading(true);
-    setLastResult(null);
     try {
       const res = await fetch("/api/auto-trade", {
         method: "POST",
@@ -157,10 +189,7 @@ export default function DashboardPage() {
       });
       const json = await res.json();
       if (!json.error && json.data) {
-        // Use the full store returned by auto-trade
-        if (json.data.store) {
-          setStore(json.data.store);
-        }
+        if (json.data.store) setStore(json.data.store);
         setLastResult({
           newTrades: json.data.newTrades?.length || 0,
           settledTrades: json.data.settledTrades?.length || 0,
@@ -170,12 +199,61 @@ export default function DashboardPage() {
           strategiesUsed: json.data.strategiesUsed,
           rejections: json.data.rejections || [],
         });
-        // Immediately fetch live prices for any new positions
         setTimeout(fetchLivePrices, 1000);
       }
     } catch {} finally {
       setAutoTrading(false);
+      autoTradingRef.current = false;
+      lastAutoTradeRef.current = Date.now();
     }
+  }, [store, fetchLivePrices]);
+
+  // Continuous mode: load persisted state
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem(CONTINUOUS_STORAGE_KEY);
+    if (saved === "true") setContinuousMode(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(CONTINUOUS_STORAGE_KEY, String(continuousMode));
+  }, [continuousMode]);
+
+  // Continuous auto-trade engine
+  useEffect(() => {
+    if (!continuousMode) {
+      if (autoTradeTimerRef.current) clearInterval(autoTradeTimerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      setNextRunIn(null);
+      return;
+    }
+
+    // Fire first run immediately if enough time elapsed
+    const runIfReady = () => {
+      const elapsed = Date.now() - lastAutoTradeRef.current;
+      if (elapsed >= AUTO_TRADE_INTERVAL_MS && !autoTradingRef.current) {
+        handleAutoTrade();
+      }
+    };
+
+    runIfReady();
+    autoTradeTimerRef.current = setInterval(runIfReady, 10_000);
+
+    countdownRef.current = setInterval(() => {
+      const elapsed = Date.now() - lastAutoTradeRef.current;
+      const remaining = Math.max(0, Math.ceil((AUTO_TRADE_INTERVAL_MS - elapsed) / 1000));
+      setNextRunIn(remaining);
+    }, 1000);
+
+    return () => {
+      if (autoTradeTimerRef.current) clearInterval(autoTradeTimerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, [continuousMode, handleAutoTrade]);
+
+  const handleToggleContinuous = () => {
+    setContinuousMode((m) => !m);
   };
 
   if (loading) {
@@ -223,6 +301,9 @@ export default function DashboardPage() {
           onRunAutoTrade={handleAutoTrade}
           onReset={handleReset}
           autoTrading={autoTrading}
+          continuousMode={continuousMode}
+          onToggleContinuous={handleToggleContinuous}
+          nextRunIn={nextRunIn}
         />
       </div>
 
