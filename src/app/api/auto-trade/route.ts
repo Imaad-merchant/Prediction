@@ -15,6 +15,7 @@ import {
   passesSlippageGate,
   scoreSettlementArbitrage,
 } from "@/lib/trading";
+import { placeLiveOrder } from "@/lib/polymarket-clob";
 
 export const maxDuration = 60;
 
@@ -345,6 +346,27 @@ export async function POST(req: Request) {
         if (shares < 1) {
           rejections.push({ question: opp.question.slice(0, 80), reason: `Position size too small ($${betDollars.toFixed(2)} → 0 shares)`, edge: analysis.edge, edgeScore });
           continue;
+        }
+
+        // === LIVE MODE: place real order on Polymarket before recording trade ===
+        if (config.mode === "live" && process.env.LIVE_ENABLED === "true") {
+          const liveResult = await placeLiveOrder({
+            tokenId: opp.tokenId,
+            side: "BUY", // always BUY the token (YES or NO) — side in opp is which token to buy
+            price: Math.min(effectivePrice * 1.01, 0.999), // pad 1% for fill probability
+            size: shares,
+          });
+          if (!liveResult.success) {
+            rejections.push({
+              question: opp.question.slice(0, 80),
+              reason: `Live order rejected: ${liveResult.errorMsg ?? "unknown"}`,
+              edge: analysis.edge,
+              edgeScore,
+            });
+            continue;
+          }
+          // Live order accepted — use its orderID for tracking
+          console.log(`Live order placed: ${liveResult.orderID} for ${opp.question.slice(0, 40)}`);
         }
 
         const trade = simulateTradeEntry(

@@ -8,6 +8,7 @@ import EquityCurve from "@/components/dashboard/EquityCurve";
 import TradeHistory from "@/components/dashboard/TradeHistory";
 import ActivePositions from "@/components/dashboard/ActivePositions";
 import TradingControls from "@/components/dashboard/TradingControls";
+import LiveModePanel from "@/components/dashboard/LiveModePanel";
 import { getBestWorstTrade } from "@/lib/trading";
 import { Loader2, BarChart2, CheckCircle, AlertTriangle, RefreshCw, Trophy, Skull } from "lucide-react";
 
@@ -291,6 +292,14 @@ export default function DashboardPage() {
             Refresh
           </button>
         </div>
+      </div>
+
+      {/* Live Mode Panel */}
+      <div className="mb-4">
+        <LiveModePanel
+          config={store.config}
+          onModeChange={(mode) => handleConfigUpdate({ mode })}
+        />
       </div>
 
       {/* Controls */}
