@@ -148,8 +148,10 @@ export function shouldTakeTrade(
     return { take: false, reason: `Recommendation is ${analysis.recommendation}` };
   }
 
-  if (Math.abs(analysis.edge) < config.minEdge) {
-    return { take: false, reason: `Edge too small (${analysis.edge.toFixed(1)}pp < ${config.minEdge}pp)` };
+  // Skip minEdge check if edgeScore already signals structural convergence (>=0.05)
+  // This allows high-probability settlement/expiry plays that GPT anchors to market price
+  if (Math.abs(analysis.edge) < config.minEdge && edgeScore < 0.05) {
+    return { take: false, reason: `Edge too small (${analysis.edge.toFixed(1)}pp < ${config.minEdge}pp, score ${edgeScore.toFixed(3)})` };
   }
 
   // Edge score threshold: 0.01 (calibrated edge already discounted by confidence + liquidity)
@@ -194,8 +196,8 @@ export function scoreSettlementArbitrage(
 ): { grossEdge: number; netEdge: number; confidence: number; viable: boolean } {
   const grossEdge = (1 / price - 1) * 100;
   const netEdge = grossEdge - takerFeePercent;
-  const priceProximity = Math.min((price - 0.90) / 0.10, 1);
-  const timeScore = hoursLeft < 4 ? 1 : hoursLeft < 12 ? 0.8 : hoursLeft < 24 ? 0.6 : 0.4;
+  const priceProximity = Math.min((price - 0.80) / 0.20, 1);
+  const timeScore = hoursLeft < 4 ? 1 : hoursLeft < 12 ? 0.8 : hoursLeft < 24 ? 0.6 : hoursLeft < 72 ? 0.5 : 0.35;
   const edgeScore = Math.min(netEdge / 3, 1);
   const confidence = priceProximity * 0.4 + timeScore * 0.35 + edgeScore * 0.25;
 
@@ -203,7 +205,8 @@ export function scoreSettlementArbitrage(
     grossEdge: Math.round(grossEdge * 100) / 100,
     netEdge: Math.round(netEdge * 100) / 100,
     confidence: Math.round(confidence * 100) / 100,
-    viable: netEdge > 0 && price >= 0.90 && price <= 0.995,
+    // Viable at 0.85+ with any positive net edge (0.85 is ~17.6% gross, ~15.6% net)
+    viable: netEdge > 0 && price >= 0.85 && price <= 0.98,
   };
 }
 

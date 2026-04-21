@@ -68,7 +68,7 @@ export async function GET() {
     }
 
     const now = Date.now();
-    const maxHours = 168; // 7 days
+    const maxHours = 336; // 14 days
 
     // Pre-filter candidates before any CLOB calls
     const candidates: Array<{
@@ -108,12 +108,12 @@ export async function GET() {
       let gammaProbability: number;
       let tokenId: string;
 
-      // Wide range: 0.70-0.995
-      if (yesProb >= 0.70 && yesProb <= 0.995) {
+      // Wide range: 0.50-0.995 (captures both arb and expiry convergence opportunities)
+      if (yesProb >= 0.50 && yesProb <= 0.995) {
         side = "YES";
         gammaProbability = yesProb;
         tokenId = clobTokenIds[0];
-      } else if (noProb >= 0.70 && noProb <= 0.995) {
+      } else if (noProb >= 0.50 && noProb <= 0.995) {
         side = "NO";
         gammaProbability = noProb;
         tokenId = clobTokenIds[1];
@@ -124,7 +124,7 @@ export async function GET() {
       if (!tokenId) continue;
 
       const volume = Number(m.volume || 0);
-      if (volume < 100) continue;
+      if (volume < 50) continue;
 
       candidates.push({
         market: m,

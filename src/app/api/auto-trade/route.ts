@@ -203,7 +203,8 @@ export async function POST(req: Request) {
       }
 
       if (config.strategy === "expiry_convergence" || config.strategy === "combined") {
-        if (opp.profitPerShare > 0.02) {
+        // Lower threshold: any market 60%-95% priced with reasonable time is a candidate
+        if (opp.gammaProbability >= 0.55 && opp.gammaProbability <= 0.95 && opp.profitPerShare > 0.01) {
           scoredOpps.push({ ...opp, strategyType: "expiry_convergence" });
         }
       }
@@ -216,11 +217,11 @@ export async function POST(req: Request) {
       return b.profitPerShare - a.profitPerShare;
     });
 
-    // Step 6: Execute trades
+    // Step 6: Execute trades — analyze up to 8 opportunities to increase hit rate
     let tradesThisRun = 0;
     const maxTradesPerRun = 3;
 
-    for (const opp of scoredOpps.slice(0, 5)) {
+    for (const opp of scoredOpps.slice(0, 8)) {
       if (tradesThisRun >= maxTradesPerRun) break;
       if (openPositionCount + tradesThisRun >= config.maxPositions) break;
       if (store.portfolio.cashBalance < 1) break;
@@ -258,18 +259,30 @@ export async function POST(req: Request) {
           const cal: CalibrationResult = calibrateJson.data;
 
           // Edge formula: raw_edge * confidence_discount * liquidity_discount
-          // edgeScore here is the discounted edge (0-1 scale) used for sizing
           const rawEdgePp = cal.edge * 100; // percentage points
           const calibratedEdge = cal.edge * cal.confidence_discount * cal.liquidity_discount;
-          edgeScore = Math.round(Math.abs(calibratedEdge) * 1000) / 1000;
 
-          // Convert CalibrationResult → AnalysisResult for downstream compatibility
-          // Recommendation thresholds tuned for Polymarket reality (3-8pp edges are common)
-          const absEdgePp = Math.abs(rawEdgePp);
+          // Structural convergence bonus: markets 70%+ with <14 days left have built-in
+          // convergence edge (price → 1 at settlement) even when GPT agrees with market
+          const hasConvergenceEdge = opp.gammaProbability >= 0.70 && opp.hoursLeft < 336;
+          const effectiveEdgePp = Math.max(
+            Math.abs(rawEdgePp),
+            hasConvergenceEdge ? (1 - opp.realAskPrice) * 100 * 0.5 : 0
+          );
+
+          edgeScore = hasConvergenceEdge
+            ? Math.max(Math.abs(calibratedEdge), (1 - opp.realAskPrice) * 0.3)
+            : Math.abs(calibratedEdge);
+          edgeScore = Math.round(edgeScore * 1000) / 1000;
+
+          // Recommendation: favor BUY when market is in convergence zone OR GPT shows edge
           let recommendation: "BUY YES" | "BUY NO" | "HOLD" | "AVOID";
-          if (absEdgePp >= 3 && cal.confidence_discount >= 0.4) {
+          if (hasConvergenceEdge && opp.realAskPrice < 0.95) {
+            // Structural play — buy to hold until expiry
+            recommendation = opp.side === "YES" ? "BUY YES" : "BUY NO";
+          } else if (effectiveEdgePp >= 2 && cal.confidence_discount >= 0.4) {
             recommendation = rawEdgePp > 0 ? "BUY YES" : "BUY NO";
-          } else if (absEdgePp >= 2) {
+          } else if (effectiveEdgePp >= 1) {
             recommendation = "HOLD";
           } else {
             recommendation = "AVOID";
