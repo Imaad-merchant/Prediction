@@ -1,0 +1,37 @@
+name: Auto-Trade Cron (5-min)
+
+# Free workaround for Vercel Hobby plan's 1/day cron limit.
+# GitHub Actions schedules can run every 5 minutes (free tier).
+#
+# Setup:
+#   1. In your GitHub repo: Settings → Secrets and variables → Actions
+#   2. Add repository secrets:
+#        CRON_SECRET    = same value as your Vercel CRON_SECRET env var
+#        DEPLOYMENT_URL = https://polypredict-delta.vercel.app
+#   3. Commit this file. The workflow auto-runs every 5 minutes.
+#
+# Note: GitHub Actions cron has occasional delays (5-15 min) under load.
+# For tighter timing, upgrade to Vercel Pro ($20/mo) and use vercel.json crons.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {} # allow manual runs
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping auto-trade endpoint
+        run: |
+          curl -s -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --max-time 60 \
+            "${{ secrets.DEPLOYMENT_URL }}/api/cron/auto-trade" \
+            | tee response.json
+
+          # Fail the job if endpoint returned an error
+          if grep -q '"error"' response.json; then
+            echo "::error::Auto-trade endpoint returned an error"
+            exit 1
+          fi
