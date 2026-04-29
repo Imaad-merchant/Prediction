@@ -66,16 +66,38 @@ export default function DashboardPage() {
   const lastAutoTradeRef = useRef<number>(0);
   const autoTradingRef = useRef(false);
 
-  // Load from localStorage on mount
+  // Load from server store first, fall back to localStorage
   useEffect(() => {
-    const loaded = loadStore();
-    setStore(loaded);
-    setLoading(false);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/server-store", { cache: "no-store" });
+        const json = await res.json();
+        if (!cancelled && json.configured && json.data) {
+          setStore(json.data);
+          setLoading(false);
+          return;
+        }
+      } catch {}
+      if (!cancelled) {
+        setStore(loadStore());
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Save to localStorage whenever store changes
+  // Save to localStorage AND server (when configured) on every change
   useEffect(() => {
-    if (!loading) saveStore(store);
+    if (loading) return;
+    saveStore(store);
+    fetch("/api/server-store", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store }),
+    }).catch(() => {}); // graceful: server store may not be configured
   }, [store, loading]);
 
   // Fetch live prices + check exit conditions client-side (SL/TP/time-exit)

@@ -155,8 +155,15 @@ export async function computeBtcSignal(horizonMinutes: number): Promise<BtcSigna
   const z15 = zChange(change15m, 15);
   const z60 = zChange(change1h, 60);
 
-  // Weighted momentum z-score — near-term has more predictive power for 5-10min windows
-  const momentumZ = 0.15 * z1 + 0.40 * z5 + 0.30 * z15 + 0.15 * z60;
+  // Weighted momentum z-score — weights shift based on horizon:
+  //   ≤10min: near-term dominates (1m+5m matter most, 1h is regime context)
+  //   30-60min: medium-term momentum (15m+1h matter most)
+  // For 60-minute predictions, 5m noise can reverse 4 times before resolution,
+  // so we deliberately downweight short-term flicker.
+  const isHourly = horizonMinutes >= 30;
+  const momentumZ = isHourly
+    ? 0.05 * z1 + 0.20 * z5 + 0.35 * z15 + 0.40 * z60
+    : 0.15 * z1 + 0.40 * z5 + 0.30 * z15 + 0.15 * z60;
 
   // RSI component: 50 is neutral. Push toward mean-reversion when extreme.
   // RSI < 30 → bullish (oversold bounce), RSI > 70 → bearish (overbought pullback)
@@ -211,19 +218,37 @@ export async function computeBtcSignal(horizonMinutes: number): Promise<BtcSigna
 
 /**
  * Detect if a market question is a BTC short-term up/down market.
- * Matches patterns like "Bitcoin Up or Down - April 20, 11:45PM-11:50PM ET"
+ * Matches BTC up/down patterns AND filters by timeframe (default: only 1-hour windows).
+ *
+ * Polymarket's "Bitcoin Up or Down" series runs at various timeframes (5min, 15min, 1hr).
+ * For our use case we only target 1-hour windows because:
+ *   1. 5-min noise dominates signal — even good TA averages 50-52%
+ *   2. 1-hour gives momentum/RSI enough resolution to be predictive
+ *   3. Wider windows allow tighter risk control (price moves > fee drag)
  */
-export function isBtcShortTermMarket(question: string): boolean {
+export function isBtcShortTermMarket(question: string, hoursLeft?: number): boolean {
   const q = question.toLowerCase();
-  return /bitcoin\s+up\s+or\s+down/.test(q) ||
-         /btc\s+up\s+or\s+down/.test(q);
+  const isBtcUpDown = /bitcoin\s+up\s+or\s+down/.test(q) || /btc\s+up\s+or\s+down/.test(q);
+  if (!isBtcUpDown) return false;
+
+  // Window detection from the question title — examples:
+  //  "Bitcoin Up or Down - April 20, 11:45PM-11:50PM ET" → 5min
+  //  "Bitcoin Up or Down - April 20, 11:00AM-12:00PM ET" → 1hr
+  // Heuristic: if question mentions ":00AM-:00PM" or matching whole-hour bounds → 1hr.
+  // Fallback: trust hoursLeft if provided.
+  const isHourly =
+    /(\d{1,2}):00\s*(am|pm)\s*[-–]\s*\d{1,2}:00\s*(am|pm)/i.test(q) ||
+    /1\s*hour|one\s+hour|next\s+hour/.test(q);
+
+  if (hoursLeft != null) {
+    // Resolution between 50-70 minutes from now → treat as hourly window
+    return hoursLeft >= 0.8 && hoursLeft <= 1.2;
+  }
+
+  return isHourly;
 }
 
-/**
- * Detect which side ("YES" or "NO") corresponds to BTC going UP.
- * For "Bitcoin Up or Down" markets, YES = Up, NO = Down.
- */
-export function btcSideForUp(question: string): "YES" | "NO" {
-  // Standard Polymarket labeling: YES = the affirmative of the question title
+/** Detect which side corresponds to BTC going UP (YES on these markets). */
+export function btcSideForUp(_question: string): "YES" | "NO" {
   return "YES";
 }

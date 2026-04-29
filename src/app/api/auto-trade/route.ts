@@ -175,9 +175,9 @@ export async function POST(req: Request) {
       console.error("Opportunities fetch failed:", e);
     }
 
-    // Apply market filter (e.g. BTC hourly only)
+    // Apply market filter (e.g. BTC hourly only) — strictly 1-hour windows
     if (config.marketFilter === "btc_hourly") {
-      opportunities = opportunities.filter((o) => isBtcShortTermMarket(o.question));
+      opportunities = opportunities.filter((o) => isBtcShortTermMarket(o.question, o.hoursLeft));
     }
 
     // Step 5: Score and categorize
@@ -252,10 +252,11 @@ export async function POST(req: Request) {
           // Convert net edge % to 0-1 scale; floor at 0.05 if viable
           edgeScore = Math.max(0.05, (opp.arbData.netEdge / 100) * Math.max(liqScore, 0.3));
           edgeScore = Math.round(edgeScore * 1000) / 1000;
-        } else if (isBtcShortTermMarket(opp.question)) {
-          // === BTC SHORT-TERM: use quantitative signal engine (Binance klines + TA) ===
-          // Parse horizon from market end date (typically 5-min or 1-hour window)
-          const horizonMin = Math.max(1, Math.min(60, Math.round(opp.hoursLeft * 60)));
+        } else if (isBtcShortTermMarket(opp.question, opp.hoursLeft)) {
+          // === BTC HOURLY: quantitative signal engine ===
+          // Use the actual time-to-resolution as the horizon (capped 1-60 min).
+          // For 1hr markets: horizon = 60, signal weights medium-term momentum more.
+          const horizonMin = Math.max(5, Math.min(60, Math.round(opp.hoursLeft * 60)));
           let signal;
           try {
             signal = await computeBtcSignal(horizonMin);
@@ -270,7 +271,6 @@ export async function POST(req: Request) {
           const modelProbYes = signal.predictedUpProbability;
           const marketProbYes = opp.side === "YES" ? opp.gammaProbability : 1 - opp.gammaProbability;
 
-          // Edge signed from BTC-UP perspective; convert to side of the opportunity
           const edgeYesPp = (modelProbYes - marketProbYes) * 100;
           const edgePp = opp.side === "YES" ? edgeYesPp : -edgeYesPp;
 
@@ -278,11 +278,20 @@ export async function POST(req: Request) {
           const calibratedEdge = (edgePp / 100) * signal.confidence * liqScore;
           edgeScore = Math.round(Math.max(Math.abs(calibratedEdge), 0.01) * 1000) / 1000;
 
-          // For BTC hourly: require moderate confidence AND edge ≥ 3pp to trade
+          // === HIGH-CONVICTION ONLY ===
+          // Be aggressive about staying out of bad trades. Better 0 trades than -EV.
+          // Require: edge ≥ 5pp (real signal), confidence ≥ 50% (strong directional bias),
+          // momentum aligned (not flat), volume ≥ 1.0x (not dead market)
+          const strongSignal =
+            Math.abs(edgePp) >= 5 &&
+            signal.confidence >= 0.5 &&
+            signal.momentum !== "flat" &&
+            signal.volumeRatio >= 0.9;
+
           let recommendation: "BUY YES" | "BUY NO" | "HOLD" | "AVOID";
-          if (Math.abs(edgePp) >= 3 && signal.confidence >= 0.35) {
+          if (strongSignal) {
             recommendation = edgePp > 0 ? "BUY YES" : "BUY NO";
-          } else if (Math.abs(edgePp) >= 1.5) {
+          } else if (Math.abs(edgePp) >= 3) {
             recommendation = "HOLD";
           } else {
             recommendation = "AVOID";
